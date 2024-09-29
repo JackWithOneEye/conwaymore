@@ -1,0 +1,88 @@
+package web
+
+import (
+	"fmt"
+	"math"
+)
+
+templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool) {
+	<script src="assets/js/index.js"></script>
+	<div class="flex flex-col flex-1 gap-x-4 gap-y-4 overflow-auto">
+		<div class="w-full bg-gray-100 border border-gray-50 rounded-lg shadow flex-1 flex flex-col overflow-hidden">
+			<div class="flex flex-wrap justify-between gap-2 p-2">
+				// pattern menu toggle
+				@golButton("pattern-menu-toggle", "PATTERNS", false)
+				<div class="flex gap-1">
+					// clear
+					@golButton("clear", "CLEAR", false)
+					// random
+					@golButton("random", "RANDOM", false)
+				</div>
+				// cell size
+				@golSlider("cell-size", "Cell Size", fmt.Sprintf("%d", cellSize), fmt.Sprintf("%d", cellSize))
+				// cell colour
+				<div class="flex flex-col text-xs w-28">
+					<label for="cell-colour">Cell Colour</label>
+					<div class="flex items-center gap-1">
+						<input id="cell-colour" class="h-5" type="color" value={ cellColourHex }/>
+						<button id="random-colour" class="hover:bg-gray-200">{ cellColourHex }</button>
+					</div>
+				</div>
+				// speed
+				@golSlider("speed", "Speed", fmt.Sprintf("%f", math.Pow((1000.0-speedMs)*0.01, 2.0)), fmt.Sprintf("%.0f ms", speedMs))
+				<div class="flex gap-1">
+					// next
+					@golButton("next", "NEXT", playing)
+					// play / pause
+					@golButton("play-pause", func() string {
+						if playing {
+							return "PAUSE"
+						}
+						return "PLAY"
+					}(), false)
+				</div>
+			</div>
+			<div id="pattern-menu" class="hidden transition-transform flex-wrap border-2 border-gray-300 gap-2 p-2 mx-1 data-[open=true]:flex data-[open=true]:transition-none">
+				<template id="pattern-template">
+					<div class="p-1 border border-gray-300 cursor-pointer" draggable="true">
+						<span></span>
+					</div>
+				</template>
+			</div>
+			<div class="flex flex-1 p-1 overflow-hidden">
+				<div class="w-full p-1 border border-gray-400">
+					<div id="canvas-wrapper" class="relative h-full">
+						<canvas class="data-[dragging]:cursor-grab data-[dragover]:bg-gray-400/10" width="100" height="100">
+							get yourself a new browser
+						</canvas>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+templ golButton(id, label string, disabled bool) {
+	<button
+		id={ id }
+		class="text-sm px-1 border border-black active:bg-gray-400 data-[active]:bg-gray-400 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none"
+		disabled?={ disabled }
+	>
+		{ label }
+	</button>
+}
+
+templ golSlider(id, label string, value string, valueLabel string) {
+	<div class="flex flex-col text-xs">
+		<label for={ id }>{ label }</label>
+		<div class="flex items-center gap-1">
+			<input
+				id={ id }
+				type="range"
+				min="1"
+				value={ value }
+			/>
+			<span id={ id + "-label" } class="w-12">{ valueLabel }</span>
+		</div>
+	</div>
+}

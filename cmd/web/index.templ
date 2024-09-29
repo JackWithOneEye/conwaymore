@@ -1,0 +1,34 @@
+package web
+
+templ Index(defaultPath string, globals *Globals) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<title>Conway's Game of Life</title>
+			<link href="assets/css/output.css" rel="stylesheet"/>
+			<script src="assets/js/vendor.js"></script>
+			@templ.JSONScript("globals", globals)
+		</head>
+		<body class="bg-gray-200 text-black font-sans">
+			<main class="h-screen flex flex-col p-3 gap-2">
+				<header class="flex items-center justify-between">
+					<span class="italic font-semibold text-3xl">Conway's Game Of Life</span>
+					<form id="game-form">
+						<input id="seed-input" name="seed" type="hidden"/>
+						<button
+							id="save-game"
+							class="p-1 border border-black active:bg-gray-400 disabled:text-gray-400 disabled:border-gray-400"
+							disabled
+							hx-post="/save"
+							hx-swap="none"
+						>
+							SAVE
+						</button>
+					</form>
+				</header>
+				<div hx-get={ defaultPath } hx-trigger="load" hx-swap="outerHTML"></div>
+			</main>
+		</body>
+	</html>
+}

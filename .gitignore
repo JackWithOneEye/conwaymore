@@ -20,6 +20,21 @@
 # Go workspace file
 go.work
 go.work.sum
+tmp/
 
 # env file
 .env
+
+# IDE specific files
+.vscode
+.idea
+
+# Build outputs
+main
+*templ.go
+cmd/web/assets/js
+cmd/web/assets/css
+
+# Misc.
+node_modules/
+test.db
