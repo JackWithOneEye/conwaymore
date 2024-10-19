@@ -1,8 +1,9 @@
+import type { CanvasWorkerEventType, CanvasWorkerMessageType, Command } from './enums';
 
 // #region canvas worker message
 
 export declare type CanvasWorkerInitMessage = {
-    type: 'init';
+    type: typeof CanvasWorkerMessageType.Init;
     canvas: OffscreenCanvas;
     cellSize: number;
     height: number;
@@ -11,45 +12,45 @@ export declare type CanvasWorkerInitMessage = {
 };
 
 export declare type CanvasDragMessage = {
-    type: 'canvasDrag';
+    type: typeof CanvasWorkerMessageType.CanvasDrag;
     dx: number;
     dy: number;
 };
 
 export declare type CellSizeChangeMessage = {
-    type: 'cellSizeChange';
+    type: typeof CanvasWorkerMessageType.CellSizeChange;
     cellSize: number;
 };
 
-export const enum Command {
-    Next,
-    Play,
-    Pause,
-    Clear,
-    Randomise
-}
 export declare type CommandMessage = {
-    type: 'command';
-    cmd: Command;
+    type: typeof CanvasWorkerMessageType.Command;
+    cmd: typeof Command[keyof typeof Command];
 };
 
 export declare type ResizeMessage = {
-    type: 'resize';
+    type: typeof CanvasWorkerMessageType.Resize;
     height: number;
     width: number;
 };
 
 export declare type SetCellsMessage = {
-    type: 'setCells';
+    type: typeof CanvasWorkerMessageType.SetCells;
+    count: number;
     colour: number;
-    coordinates: number[]; // x | y
+    coordinates: Uint8Array; // x | y
     originPx: number;
     originPy: number;
 };
 
 export declare type SetSpeedMessage = {
-    type: 'setSpeed';
+    type: typeof CanvasWorkerMessageType.SetSpeed;
     speed: number;
+};
+
+export declare type SettingsChangeMessage = {
+    type: typeof CanvasWorkerMessageType.SettingsChange;
+    drawAge: boolean;
+    drawGrid: boolean;
 };
 
 export declare type CanvasWorkerMessage = CanvasWorkerInitMessage
@@ -58,22 +59,27 @@ export declare type CanvasWorkerMessage = CanvasWorkerInitMessage
     | CommandMessage
     | ResizeMessage
     | SetCellsMessage
-    | SetSpeedMessage;
+    | SetSpeedMessage
+    | SettingsChangeMessage;
 
 // #endregion canvas worker message
 
 // #region canvas worker event
 
+export declare type ReadyEvent = {
+    type: typeof CanvasWorkerEventType.Ready;
+};
+
 export declare type PlaybackStateChangedEvent = {
-    type: 'playbackStateChanged';
-    state: 0 | 1
+    type: typeof CanvasWorkerEventType.PlaybackStateChanged;
+    playing: boolean;
 };
 
 export declare type SpeedChangedEvent = {
-    type: 'speedChanged';
+    type: typeof CanvasWorkerEventType.SpeedChanged;
     speed: number;
 };
 
-export declare type CanvasWorkerEvent = PlaybackStateChangedEvent | SpeedChangedEvent;
+export declare type CanvasWorkerEvent = PlaybackStateChangedEvent | ReadyEvent | SpeedChangedEvent;
 
 // #endregion canvas worker event

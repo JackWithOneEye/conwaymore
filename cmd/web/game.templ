@@ -8,7 +8,7 @@ import (
 templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool) {
 	<script src="assets/js/index.js"></script>
 	<div class="flex flex-col flex-1 gap-x-4 gap-y-4 overflow-auto">
-		<div class="w-full bg-gray-100 border border-gray-50 rounded-lg shadow flex-1 flex flex-col overflow-hidden">
+		<div class="w-full bg-slate-950 border border-gray-50 rounded-lg shadow flex-1 flex flex-col overflow-hidden">
 			<div class="flex flex-wrap justify-between gap-2 p-2">
 				// pattern menu toggle
 				@golButton("pattern-menu-toggle", "PATTERNS", false)
@@ -25,7 +25,17 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool) {
 					<label for="cell-colour">Cell Colour</label>
 					<div class="flex items-center gap-1">
 						<input id="cell-colour" class="h-5" type="color" value={ cellColourHex }/>
-						<button id="random-colour" class="hover:bg-gray-200">{ cellColourHex }</button>
+						<button id="random-colour" class="hover:bg-slate-600">{ cellColourHex }</button>
+					</div>
+				</div>
+				<div class="flex flex-col">
+					<div class="flex gap-2 items-center text-xs">
+						<input id="show-age" class="h-5" type="checkbox"/>
+						<label for="show-age">Age</label>
+					</div>
+					<div class="flex gap-2 items-center text-xs">
+						<input id="draw-grid" class="h-5" type="checkbox" checked/>
+						<label for="draw-grid">Grid</label>
 					</div>
 				</div>
 				// speed
@@ -50,7 +60,7 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool) {
 				</template>
 			</div>
 			<div class="flex flex-1 p-1 overflow-hidden">
-				<div class="w-full p-1 border border-gray-400">
+				<div class="w-full p-1 border border-white">
 					<div id="canvas-wrapper" class="relative h-full">
 						<canvas class="data-[dragging]:cursor-grab data-[dragover]:bg-gray-400/10" width="100" height="100">
 							get yourself a new browser
@@ -65,7 +75,7 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool) {
 templ golButton(id, label string, disabled bool) {
 	<button
 		id={ id }
-		class="text-sm px-1 border border-black active:bg-gray-400 data-[active]:bg-gray-400 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none"
+		class="text-sm px-1 border border-white active:bg-slate-800 data-[active]:bg-slate-800 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none"
 		disabled?={ disabled }
 	>
 		{ label }

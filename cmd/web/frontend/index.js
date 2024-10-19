@@ -1,8 +1,9 @@
 /** @import { CanvasDragState, Globals, PatternDragState } from './types/ui' */
-/** @import { CanvasWorkerEvent, CanvasWorkerInitMessage, CanvasWorkerMessage, Command } from './types/worker' */
+/** @import { CanvasWorkerEvent, CanvasWorkerInitMessage, CanvasWorkerMessage } from './types/worker' */
 import { Patterns } from './patterns';
 import { getElementByIdOrDie } from './helpers';
 import { computed, effect, reactive, signal } from './signals';
+import { CanvasWorkerEventType, CanvasWorkerMessageType, Command } from './types/enums';
 
 const globalsEl = getElementByIdOrDie('globals')
 if (!globalsEl.textContent) {
@@ -11,7 +12,7 @@ if (!globalsEl.textContent) {
 /** @type {Globals} */
 const { WorldSize } = JSON.parse(globalsEl.textContent);
 
-const canvasWorker = new Worker('/assets/js/worker/worker.js', { type: 'module' });
+const canvasWorker = new Worker('/assets/js/worker.js', { type: 'module' });
 
 /**
  * @param {CanvasWorkerMessage} msg 
@@ -40,30 +41,29 @@ const App = {
         cellSize: /** @type {HTMLInputElement} */ (getElementByIdOrDie('cell-size')),
         cellSizeLabel: getElementByIdOrDie('cell-size-label'),
 
+        drawGrid: /** @type {HTMLInputElement} */ (getElementByIdOrDie('draw-grid')),
+        showAge: /** @type {HTMLInputElement} */ (getElementByIdOrDie('show-age')),
+
         speed: /** @type {HTMLInputElement} */ (getElementByIdOrDie('speed')),
         speedLabel: getElementByIdOrDie('speed-label'),
     },
     init() {
         App.$.save.removeAttribute('disabled');
         App.$.clear.addEventListener('click', () => canvasWorkerMessage({
-            type: 'command',
-            /** @type {Command.Clear} */
-            cmd: 3
+            type: CanvasWorkerMessageType.Command,
+            cmd: Command.Clear
         }));
         App.$.next.addEventListener('click', () => canvasWorkerMessage({
-            type: 'command',
-            /** @type {Command.Next} */
-            cmd: 0
+            type: CanvasWorkerMessageType.Command,
+            cmd: Command.Next
         }));
         App.$.playPause.addEventListener('click', () => canvasWorkerMessage({
-            type: 'command',
-            /** @type {Command.Play | Command.Pause} */
-            cmd: App.playback.state() ? 2 : 1
+            type: CanvasWorkerMessageType.Command,
+            cmd: App.playback.state() ? Command.Pause : Command.Play
         }));
         App.$.random.addEventListener('click', () => canvasWorkerMessage({
-            type: 'command',
-            /** @type {Command.Randomise} */
-            cmd: 4
+            type: CanvasWorkerMessageType.Command,
+            cmd: Command.Randomise
         }));
 
         let patternMenuOpen = false;
@@ -97,7 +97,7 @@ const App = {
         App.$.cellSize.addEventListener('input', () => {
             const cellSize = Number(App.$.cellSize.value);
             App.$.cellSizeLabel.textContent = App.$.cellSize.value;
-            canvasWorkerMessage({ type: 'cellSizeChange', cellSize });
+            canvasWorkerMessage({ type: CanvasWorkerMessageType.CellSizeChange, cellSize });
         });
 
         App.$.cellColour.addEventListener('input', () => {
@@ -107,8 +107,12 @@ const App = {
             App.cellColour.state.update((Math.random() * 0xffffff) | 0);
         });
 
+        App.$.drawGrid.addEventListener('input', () => {
+            App.settings.state.drawGrid = App.$.drawGrid.checked;
+        });
+
         App.$.speed.addEventListener('input', () => {
-            canvasWorkerMessage({ type: 'setSpeed', speed: App.speed.convertSpeed(App.$.speed.value) });
+            canvasWorkerMessage({ type: CanvasWorkerMessageType.SetSpeed, speed: App.speed.convertSpeed(App.$.speed.value) });
         });
 
         document.addEventListener('mouseup', () => {
@@ -117,7 +121,7 @@ const App = {
 
         const resObs = new ResizeObserver((entries) => {
             const { height, width } = entries[0].contentRect;
-            canvasWorkerMessage({ type: 'resize', height, width });
+            canvasWorkerMessage({ type: CanvasWorkerMessageType.Resize, height, width });
         });
         resObs.observe(App.$.canvasWrapper);
 
@@ -167,20 +171,51 @@ const App = {
             if (!patternType) {
                 return;
             }
-            const { coordinates } = Patterns[patternType];
+            const { coordinates: { bytes, count } } = Patterns[patternType];
             canvasWorkerMessage({
-                type: 'setCells',
+                type: CanvasWorkerMessageType.SetCells,
+                count,
                 colour: App.cellColour.state(),
-                coordinates,
+                coordinates: bytes,
                 originPx: e.offsetX,
                 originPy: e.offsetY
             });
         });
 
         App.playback.state.update(App.$.playPause.textContent === 'PAUSE');
+        App.settings.state.drawGrid = App.$.drawGrid.checked;
         App.speed.state.update(App.speed.convertSpeed(App.$.speed.value));
 
         const cellColourAttr = computed(() => `#${App.cellColour.state().toString(16).padStart(6, '0')}`);
+
+        /**
+         * @param {MessageEvent<CanvasWorkerEvent[]>} e 
+         */
+        canvasWorker.onmessage = (e) => {
+            for (const ev of e.data) {
+                switch (ev.type) {
+                    case CanvasWorkerEventType.PlaybackStateChanged:
+                        App.playback.state.update(ev.playing);
+                        break;
+                    case CanvasWorkerEventType.SpeedChanged:
+                        App.speed.state.update(ev.speed);
+                        break;
+                    default:
+                        console.error('unknown worker event type', ev)
+                }
+            }
+        };
+
+        const osCanvas = App.$.canvas.transferControlToOffscreen();
+        canvasWorker.postMessage(/** @type {CanvasWorkerInitMessage} */({
+            type: CanvasWorkerMessageType.Init,
+            canvas: osCanvas,
+            cellSize: Number(App.$.cellSize.value),
+            height: App.$.canvasWrapper.offsetHeight,
+            width: App.$.canvasWrapper.offsetWidth,
+            worldSize: WorldSize
+        }), [osCanvas]);
+
         effect(() => {
             const attr = cellColourAttr();
             App.$.cellColour.value = attr;
@@ -214,41 +249,23 @@ const App = {
         });
 
         effect(() => {
+            const drawAge = App.settings.state.drawAge
+            const drawGrid = App.settings.state.drawGrid;
+            canvasWorkerMessage({
+                type: CanvasWorkerMessageType.SettingsChange,
+                drawAge,
+                drawGrid
+            });
+        });
+
+        effect(() => {
             const speed = App.speed.state();
             App.$.speed.value = `${Math.pow((1000 - speed) * 0.01, 2)}`;
             App.$.speedLabel.textContent = `${speed.toFixed(0)} ms`;
         });
-
-        /**
-         * @param {MessageEvent<CanvasWorkerEvent[]>} arg 
-         */
-        canvasWorker.onmessage = ({ data }) => {
-            for (const ev of data) {
-                switch (ev.type) {
-                    case 'playbackStateChanged':
-                        App.playback.state.update(ev.state === 1);
-                        break;
-                    case 'speedChanged':
-                        App.speed.state.update(ev.speed);
-                        break;
-                    default:
-                        console.error('unknown worker event type', ev)
-                }
-            }
-        };
-
-        const osCanvas = App.$.canvas.transferControlToOffscreen();
-        canvasWorker.postMessage(/** @type {CanvasWorkerInitMessage} */({
-            type: 'init',
-            canvas: osCanvas,
-            cellSize: Number(App.$.cellSize.value),
-            height: App.$.canvasWrapper.offsetHeight,
-            width: App.$.canvasWrapper.offsetWidth,
-            worldSize: WorldSize
-        }), [osCanvas]);
     },
     cellColour: {
-        state: signal(0),
+        state: signal(0xffffff),
     },
     dragPattern: {
         state: reactive(/** @type {PatternDragState} */({ canvasDragOver: false, type: null })),
@@ -295,8 +312,8 @@ const App = {
             }
             const dx = x - st.x;
             const dy = y - st.y;
-            if (st.mouseState === 'dragging' || Math.abs(x) > 5 || Math.abs(y) > 5) {
-                canvasWorkerMessage({ type: 'canvasDrag', dx, dy });
+            if (st.mouseState === 'dragging' || Math.abs(x) > 7.5 || Math.abs(y) > 7.5) {
+                canvasWorkerMessage({ type: CanvasWorkerMessageType.CanvasDrag, dx, dy });
                 st.x = x;
                 st.y = y;
                 st.mouseState = 'dragging';
@@ -310,9 +327,10 @@ const App = {
             const st = App.moveCanvas.state;
             if (st.mouseState === 'down') {
                 canvasWorkerMessage({
-                    type: 'setCells',
+                    type: CanvasWorkerMessageType.SetCells,
+                    count: 1,
                     colour: App.cellColour.state(),
-                    coordinates: [0],
+                    coordinates: new Uint8Array([0, 0, 0, 0]),
                     originPx: x,
                     originPy: y
                 });
@@ -322,6 +340,9 @@ const App = {
     },
     playback: {
         state: signal(false),
+    },
+    settings: {
+        state: reactive({ drawGrid: true, drawAge: false })
     },
     speed: {
         state: signal(0),
@@ -334,5 +355,4 @@ const App = {
     }
 };
 
-App.init();
-
+canvasWorker.addEventListener('message', App.init, { once: true });

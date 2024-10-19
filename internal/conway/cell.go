@@ -1,35 +1,43 @@
 package conway
 
+import (
+	"math"
+)
+
 type Cell interface {
-	Values() (x, y uint16, colour uint32)
+	Values() (x, y uint16, colour uint32, age uint16)
 }
 
 type aliveCell struct {
 	x      uint16
 	y      uint16
 	colour uint32
+	age    uint16
 }
 
-func (ac *aliveCell) Values() (x, y uint16, colour uint32) {
-	return ac.x, ac.y, ac.colour
+func (ac *aliveCell) Values() (x, y uint16, colour uint32, age uint16) {
+	return ac.x, ac.y, ac.colour, ac.age
 }
 
 func (ac *aliveCell) copy(other *aliveCell) {
 	ac.x = other.x
 	ac.y = other.y
 	ac.colour = other.colour
+	ac.age = other.age
 }
 
-func (ac *aliveCell) set(x, y uint16, colour uint32) {
+func (ac *aliveCell) set(x, y uint16, colour uint32, age uint16) {
 	ac.x = x
 	ac.y = y
 	ac.colour = colour
+	ac.age = age
 }
 
 type cellNeighbour struct {
 	x               uint16
 	y               uint16
 	colour          uint32
+	age             uint16
 	aliveNeighbours []aliveCell
 	count           uint8
 	survivor        bool
@@ -39,7 +47,6 @@ func newCellNeighbour(cell *aliveCell, x, y uint16) *cellNeighbour {
 	cn := &cellNeighbour{
 		x:               x,
 		y:               y,
-		colour:          0,
 		count:           1,
 		survivor:        false,
 		aliveNeighbours: make([]aliveCell, 3),
@@ -55,11 +62,16 @@ func (cn *cellNeighbour) increment(neighbour *aliveCell) {
 	cn.count += 1
 }
 
-func (cn *cellNeighbour) survive(colour uint32) {
+func (cn *cellNeighbour) survive(colour uint32, age uint16) {
 	if cn.count == 2 {
 		cn.count += 1
 	}
 	cn.colour = colour
+	if age < math.MaxUint16 {
+		cn.age = age + 1
+	} else {
+		cn.age = age
+	}
 	cn.survivor = true
 }
 

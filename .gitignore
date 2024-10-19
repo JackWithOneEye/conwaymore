@@ -30,7 +30,7 @@ tmp/
 .idea
 
 # Build outputs
-main
+bin/
 *templ.go
 cmd/web/assets/js
 cmd/web/assets/css

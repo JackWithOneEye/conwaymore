@@ -16,7 +16,7 @@ type Conway interface {
 	Clear()
 	NextGen()
 	Randomise()
-	SetCell(x, y uint16, colour uint32)
+	SetCell(x, y uint16, colour uint32, age uint16)
 }
 
 type conway struct {
@@ -51,7 +51,7 @@ func (e *conway) CanSetCell(x, y uint16) bool {
 
 func (e *conway) Clear() {
 	for i := range e.output {
-		e.output[i].set(0, 0, 0)
+		e.output[i].set(0, 0, 0, 0)
 	}
 	e.numAliveCells = 0
 }
@@ -104,7 +104,7 @@ func (e *conway) NextGen() {
 		if n != nil {
 			cnt := n.count
 			if cnt == 2 || cnt == 3 {
-				n.survive(cell.colour)
+				n.survive(cell.colour, cell.age)
 			}
 		}
 	}
@@ -115,7 +115,7 @@ func (e *conway) NextGen() {
 				n.create()
 			}
 			cell := &e.output[numAlive]
-			cell.set(n.x, n.y, n.colour)
+			cell.set(n.x, n.y, n.colour, n.age)
 			numAlive += 1
 		}
 	}
@@ -132,15 +132,15 @@ func (e *conway) Randomise() {
 				continue
 			}
 			colour := rand.Uint32N(0xffffff)
-			e.output[e.numAliveCells].set(uint16(x), uint16(y), colour)
+			e.output[e.numAliveCells].set(uint16(x), uint16(y), colour, 0)
 			e.numAliveCells += 1
 		}
 	}
 }
 
-func (e *conway) SetCell(x, y uint16, colour uint32) {
+func (e *conway) SetCell(x, y uint16, colour uint32, age uint16) {
 	ac := &e.output[e.numAliveCells]
-	ac.set(x, y, uint32(colour))
+	ac.set(x, y, uint32(colour), age)
 	e.numAliveCells += 1
 }
 

@@ -2,18 +2,14 @@ package engine
 
 import (
 	"errors"
+	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/JackWithOneEye/conwaymore/internal/conway"
-)
-
-const (
-	stateIdx      = 0
-	speedIdx      = 1
-	cellsCountIdx = 3
-	cellsIdx      = 6
+	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 )
 
 type EngineConfig interface {
@@ -25,7 +21,7 @@ type Engine interface {
 	Playing() bool
 	Speed() uint32
 	Start()
-	SubmitMessage(msg []byte) error
+	SubmitMessage(b []byte) error
 }
 
 type state = uint32
@@ -34,8 +30,6 @@ const (
 	paused state = iota
 	playing
 )
-
-const bytesPerCell = 7
 
 type engine struct {
 	conway       conway.Conway
@@ -46,10 +40,6 @@ type engine struct {
 	outputChan   chan []byte
 }
 
-/**
- * STATE|(SPEED|SPEED)|(X|X|Y|Y|R|G|B)|(...)|(...)|...
- */
-
 func NewEngine(cfg EngineConfig, seed []byte) Engine {
 	e := &engine{
 		conway:     conway.NewConway(cfg),
@@ -57,7 +47,10 @@ func NewEngine(cfg EngineConfig, seed []byte) Engine {
 	}
 
 	e.speed.Store(100)
-	e.setSeed(seed)
+	err := e.setSeed(seed)
+	if err != nil {
+		log.Printf("error setting seed: %s", err)
+	}
 
 	e.generateOutput()
 
@@ -82,9 +75,7 @@ func (e *engine) Start() {
 
 	for range ticker.C {
 		if e.state.Load() == playing {
-			e.mutex.Lock()
-			e.conway.NextGen()
-			e.mutex.Unlock()
+			e.calcNextGen()
 			e.generateOutput()
 		}
 		if e.speedChanged.Load() {
@@ -94,102 +85,35 @@ func (e *engine) Start() {
 	}
 }
 
-func (e *engine) SubmitMessage(msg []byte) error {
-	msgLen := len(msg)
-	if msgLen == 0 {
-		return errors.New("empty message")
+func (e *engine) SubmitMessage(b []byte) error {
+	msg, err := protocol.DecodeClientMessage(b)
+	if err != nil {
+		return fmt.Errorf("decode error: %w", err)
 	}
 
-	mType := uint(msg[msgType])
+	switch t := msg.(type) {
+	case *protocol.Command:
+		err = e.handleCommand(t)
+	case *protocol.SetCells:
+		err = e.handleSetCells(t)
+	case *protocol.SetSpeed:
+		err = e.handleSetSpeed(t)
 
-	gameChanged := false
-
-	if mType&command == command {
-		if msgLen < 2 {
-			return errors.New("command value missing")
-		}
-		switch uint(msg[cmd]) {
-		case next:
-			if e.state.Load() == paused {
-				e.mutex.Lock()
-				e.conway.NextGen()
-				e.mutex.Unlock()
-			}
-		case play:
-			e.state.CompareAndSwap(paused, playing)
-		case pause:
-			e.state.CompareAndSwap(playing, paused)
-		case clear:
-			e.mutex.Lock()
-			e.conway.Clear()
-			e.mutex.Unlock()
-		case randomise:
-			e.mutex.Lock()
-			e.conway.Randomise()
-			e.mutex.Unlock()
-		}
-		gameChanged = true
 	}
 
-	if mType&setSpeed == setSpeed {
-		if msgLen < 4 {
-			return errors.New("speed value missing")
-		}
-		changed := e.setSpeed(msg[speed:])
-		e.speedChanged.Store(changed)
-		gameChanged = true
+	if err != nil {
+		return fmt.Errorf("handle command error: %w", err)
 	}
 
-	if mType&setCells == setCells {
-		if msgLen < 5 {
-			return errors.New("cells count missing")
-		}
-		count := uint(msg[cellsCount])
-		lenCells := bytesPerCell * count
-		if msgLen < int(lenCells) {
-			return errors.New("cells missing")
-		}
-		func() {
-			e.mutex.Lock()
-			defer e.mutex.Unlock()
-
-			type validCell struct {
-				x, y uint16
-				c    uint32
-			}
-			validCells := make([]validCell, count)
-			vidx := 0
-			for i := cells; i < cells+lenCells; i += bytesPerCell {
-				x, y, colour := bytesToCellValues(msg, i)
-				if !e.conway.CanSetCell(x, y) {
-					return
-				}
-				validCells[vidx] = validCell{x, y, colour}
-				vidx += 1
-			}
-			for i := range validCells {
-				vc := validCells[i]
-				e.conway.SetCell(vc.x, vc.y, vc.c)
-			}
-			gameChanged = true
-		}()
-	}
-
-	if gameChanged {
-		e.generateOutput()
-	}
+	e.generateOutput()
 
 	return nil
 }
 
-func bytesToCellValues(data []byte, index uint) (x, y uint16, colour uint32) {
-	x = ((uint16(data[index]) << 8) & 0xff00) | (uint16(data[index+1]) & 0x00ff)
-	y = ((uint16(data[index+2]) << 8) & 0xff00) | (uint16(data[index+3]) & 0x00ff)
-	colour = ((uint32(data[index+4]) << 16) & 0xff0000) |
-		((uint32(data[index+5]) << 8) & 0x00ff00) |
-		(uint32(data[index+6]) & 0x0000ff)
-
-	return
+func (e *engine) calcNextGen() {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.conway.NextGen()
 }
 
 func (e *engine) generateOutput() {
@@ -197,57 +121,97 @@ func (e *engine) generateOutput() {
 	defer e.mutex.RUnlock()
 
 	cellsCount := e.conway.CellsCount()
-	output := make([]byte, 1+2+3+cellsCount*bytesPerCell)
+	o := &protocol.Output{
+		CellsCount: uint32(cellsCount),
+		Playing:    e.state.Load() == playing,
+		Speed:      uint16(e.speed.Load()),
+		Cells:      make([]*protocol.Cell, cellsCount),
+	}
 
-	output[stateIdx] = byte(e.state.Load())
-
-	speed := e.speed.Load()
-	output[speedIdx] = byte(speed >> 8)
-	output[speedIdx+1] = byte(speed & 0x00ff)
-
-	output[cellsCountIdx] = byte((cellsCount & 0x00ff0000) >> 16)
-	output[cellsCountIdx+1] = byte((cellsCount & 0x0000ff00) >> 8)
-	output[cellsCountIdx+2] = byte(cellsCount & 0x000000ff)
-
-	i := cellsIdx
+	i := 0
 	for cell := range e.conway.Cells() {
-		x, y, colour := cell.Values()
-		output[i] = byte(x >> 8)
-		i += 1
-		output[i] = byte(x)
-		i += 1
-		output[i] = byte(y >> 8)
-		i += 1
-		output[i] = byte(y)
-		i += 1
-
-		output[i] = byte(colour >> 16)
-		i += 1
-		output[i] = byte(colour >> 8)
-		i += 1
-		output[i] = byte(colour)
+		x, y, colour, age := cell.Values()
+		o.Cells[i] = &protocol.Cell{X: x, Y: y, Colour: colour, Age: age}
 		i += 1
 	}
 
-	e.outputChan <- output
+	e.outputChan <- o.Encode()
 }
 
-func (e *engine) setSeed(seed []byte) {
-	if len(seed) < cellsIdx {
-		return
+func (e *engine) handleCommand(c *protocol.Command) error {
+	switch c.Cmd {
+	case protocol.Clear:
+		e.mutex.Lock()
+		e.conway.Clear()
+		e.mutex.Unlock()
+	case protocol.Next:
+		if e.state.Load() == playing {
+			return errors.New("cannot execute next command while playing")
+		}
+		e.calcNextGen()
+	case protocol.Pause:
+		if e.state.Load() == paused {
+			return errors.New("already paused")
+		}
+		e.state.Store(paused)
+	case protocol.Play:
+		if e.state.Load() == playing {
+			return errors.New("already playing")
+		}
+		e.state.Store(playing)
+	case protocol.Randomise:
+		e.mutex.Lock()
+		e.conway.Randomise()
+		e.mutex.Unlock()
 	}
-	e.state.Store(uint32(seed[stateIdx]))
-	_ = e.setSpeed(seed[speedIdx : speedIdx+2])
-	cellsCount := (uint(seed[cellsCountIdx])<<16)&0xff0000 | (uint(seed[cellsCountIdx+1])<<8)&0xff00 | uint(seed[cellsCountIdx+2])&0xff
-	var i uint = cellsIdx
-	for ; i < (cellsIdx + cellsCount*bytesPerCell); i += bytesPerCell {
-		x, y, colour := bytesToCellValues(seed, i)
-		e.conway.SetCell(x, y, colour)
-	}
+
+	return nil
 }
 
-func (e *engine) setSpeed(data []byte) (changed bool) {
-	newSpeed := max(1, (uint32(data[0])<<8)|uint32(data[1]))
-	old := e.speed.Swap(newSpeed)
-	return newSpeed != old
+func (e *engine) handleSetCells(sc *protocol.SetCells) error {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	for i := range sc.Cells {
+		c := sc.Cells[i]
+		if !e.conway.CanSetCell(c.X, c.Y) {
+			return fmt.Errorf("cannot set cell at (%d, %d)", c.X, c.Y)
+		}
+	}
+	for i := range sc.Cells {
+		c := sc.Cells[i]
+		e.conway.SetCell(c.X, c.Y, c.Colour, 0)
+	}
+
+	return nil
+}
+
+func (e *engine) handleSetSpeed(sp *protocol.SetSpeed) error {
+	new := uint32(sp.Speed)
+	old := e.speed.Swap(new)
+	if new == old {
+		return errors.New("speed has not changed")
+	}
+	e.speedChanged.Store(true)
+
+	return nil
+}
+
+func (e *engine) setSeed(seed []byte) error {
+	o := &protocol.Output{}
+	err := o.Decode(seed)
+	if err != nil {
+		return err
+	}
+	if o.Playing {
+		e.state.Store(playing)
+	} else {
+		e.state.Store(paused)
+	}
+	e.speed.Store(uint32(o.Speed))
+	for i := range o.Cells {
+		c := o.Cells[i]
+		e.conway.SetCell(c.X, c.Y, c.Colour, c.Age)
+	}
+	return nil
 }

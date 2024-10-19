@@ -1,12 +1,15 @@
 /**
  * @param {TemplateStringsArray} strings
+ * @returns {{bytes: Uint8Array; count: number}}
  */
 function cs({ raw: [input] }) {
   let inRow = false;
   let y = -1;
   let x = -1;
+
   /** @type {number[]} */
-  const coordinates = [];
+  const bytes = [];
+  let count = 0
   for (const char of input) {
     if (char === '|') {
       if (inRow) {
@@ -25,10 +28,15 @@ function cs({ raw: [input] }) {
 
     x += 1;
     if (char === 'x') {
-      coordinates.push(x << 16 | y);
+      bytes.push((x >> 8) & 0xff);
+      bytes.push(x & 0xff);
+      bytes.push((y >> 8) & 0xff);
+      bytes.push(y & 0xff);
+      count++;
     }
   }
-  return coordinates;
+
+  return { bytes: new Uint8Array(bytes), count };
 }
 
 export const Patterns = /** @type {const} */ ({
@@ -180,10 +188,6 @@ export const Patterns = /** @type {const} */ ({
     `
   }
 });
-
-export const MAX_PATTERN_COORDINATES_LEN = Math.max(
-  ...Object.values(Patterns).map(({ coordinates }) => coordinates.length)
-);
 
 /** 
  * @typedef {keyof typeof Patterns} PatternType

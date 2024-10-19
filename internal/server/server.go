@@ -11,6 +11,7 @@ import (
 	"github.com/JackWithOneEye/conwaymore/cmd/web"
 	"github.com/JackWithOneEye/conwaymore/internal/database"
 	"github.com/JackWithOneEye/conwaymore/internal/engine"
+	"github.com/JackWithOneEye/conwaymore/internal/livereload"
 	"github.com/a-h/templ"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -97,12 +98,14 @@ func (s *server) registerRoutes() http.Handler {
 		WorldSize: s.cfg.WorldSize(),
 	}
 
-	r.GET("/", func(c *gin.Context) {
+	r.GET("/_livereload", livereload.Handler)
+
+	r.GET("/", livereload.InjectScript("/_livereload", func(c *gin.Context) {
 		templ.Handler(web.Index("/game", &globals)).ServeHTTP(c.Writer, c.Request)
-	})
+	}))
 
 	r.GET("/game", func(c *gin.Context) {
-		templ.Handler(web.Game("#000000", 30, float64(s.engine.Speed()), s.engine.Playing())).ServeHTTP(c.Writer, c.Request)
+		templ.Handler(web.Game("#ffffff", 30, float64(s.engine.Speed()), s.engine.Playing())).ServeHTTP(c.Writer, c.Request)
 	})
 
 	r.GET("/play", s.playHandler)
