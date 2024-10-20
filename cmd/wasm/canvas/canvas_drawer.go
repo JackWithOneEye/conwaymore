@@ -22,7 +22,6 @@ type CanvasDrawer interface {
 
 const (
 	gridLineWidth = 0.5
-	strokeStyle   = "#ffffff"
 )
 
 type drawMode uint
@@ -31,6 +30,8 @@ const (
 	drawColour drawMode = iota
 	drawAge
 )
+
+var global = js.Global()
 
 type canvasDrawer struct {
 	axisLength  uint16
@@ -54,12 +55,14 @@ type canvasDrawer struct {
 }
 
 func NewCanvasDrawer(canvas js.Value, axisLength, cellSize int, height, width float64) CanvasDrawer {
+	ctx := canvas.Call("getContext", "2d", map[string]any{"alpha": false})
+
 	cd := &canvasDrawer{
 		axisLength:  uint16(axisLength),
 		canvas:      canvas,
 		cellSize:    float64(cellSize),
 		cellSizeInv: 1 / float64(cellSize),
-		ctx:         canvas.Call("getContext", "2d", map[string]any{"alpha": false}),
+		ctx:         ctx,
 		wrapMask:    uint16(axisLength) - 1,
 
 		xBoundary: coordBoundary{within: true},
@@ -76,8 +79,13 @@ func NewCanvasDrawer(canvas js.Value, axisLength, cellSize int, height, width fl
 }
 
 func (cd *canvasDrawer) Draw(cells []*protocol.Cell) {
-	height, width := cd.cachedDim.values()
-	cd.ctx.Call("clearRect", 0, 0, width, height)
+	// start := time.Now()
+	// defer func() {
+	// 	dur := time.Since(start).Microseconds()
+	// 	log.Printf("??? %d", dur)
+	// }()
+
+	global.Call("prepareCtx", cd.ctx, 0xffffff, gridLineWidth)
 
 	if cd.grid {
 		cd.drawGrid()
@@ -129,8 +137,7 @@ func (cd *canvasDrawer) SetCellSize(cellSize float64) {
 }
 
 func (cd *canvasDrawer) SetDimensions(height, width float64) {
-	cd.canvas.Set("height", height)
-	cd.canvas.Set("width", width)
+	global.Call("setDimensions", cd.canvas, width, height)
 	cd.cachedDim.set(height, width)
 	cd.calcVisibleCoordinates()
 }
@@ -260,26 +267,25 @@ func (cd *canvasDrawer) drawCell(cell *protocol.Cell) {
 	}
 
 	// x1 y1
-	cd.ctx.Call("fillRect", drawX1, drawY1, drawWidth1, drawHeight1)
+	global.Call("strokeAndFillRect", cd.ctx, drawX1, drawY1, drawWidth1, drawHeight1)
 
 	if drawXCount == 2 {
 		// x2 y1
-		cd.ctx.Call("fillRect", drawX2, drawY1, drawWidth2, drawHeight1)
+		global.Call("strokeAndFillRect", cd.ctx, drawX2, drawY1, drawWidth2, drawHeight1)
 	}
 
 	if drawYCount == 2 {
 		// x1 y2
-		cd.ctx.Call("fillRect", drawX1, drawY2, drawWidth1, drawHeight2)
+		global.Call("strokeAndFillRect", cd.ctx, drawX1, drawY2, drawWidth1, drawHeight2)
 
 		if drawXCount == 2 {
 			// x2 y2
-			cd.ctx.Call("fillRect", drawX2, drawY2, drawWidth2, drawHeight2)
+			global.Call("strokeAndFillRect", cd.ctx, drawX2, drawY2, drawWidth2, drawHeight2)
 		}
 	}
 }
 
 func (cd *canvasDrawer) drawGrid() {
-	cd.ctx.Call("beginPath")
 	height, width := cd.cachedDim.values()
 	height = min(height, cd.worldSize)
 	width = min(width, cd.worldSize)
@@ -288,23 +294,15 @@ func (cd *canvasDrawer) drawGrid() {
 
 	x := xRem
 	for x <= width {
-		cd.ctx.Call("moveTo", x+gridLineWidth, 0)
-		cd.ctx.Call("lineTo", x+gridLineWidth, height)
+		global.Call("vertPath", cd.ctx, x+gridLineWidth, height)
 		x += cd.cellSize
 	}
 
 	y := math.Remainder(cd.yOffset, float64(cd.cellSize))
 	for y <= height {
-		cd.ctx.Call("moveTo", 0, y+gridLineWidth)
-		cd.ctx.Call("lineTo", width, y+gridLineWidth)
-		// xx := xRem
-		// for xx < width {
-		// 	xx += cd.cellSize
-		// }
+		global.Call("horizPath", cd.ctx, y+gridLineWidth, width)
 		y += cd.cellSize
 	}
 
-	cd.ctx.Set("strokeStyle", strokeStyle)
-	cd.ctx.Set("lineWidth", gridLineWidth)
 	cd.ctx.Call("stroke")
 }

@@ -54,10 +54,11 @@ const (
 )
 
 func main() {
+	global := js.Global()
 	defer func() {
 		drawFunc.Release()
 
-		js.Global().Call("removeEventListener", "message", onMessageFunc)
+		global.Call("removeEventListener", "message", onMessageFunc)
 		onMessageFunc.Release()
 	}()
 
@@ -70,8 +71,8 @@ func main() {
 	conn.SetReadLimit(33554432) // 2^25
 	log.Println("WS CONN OPEN")
 
-	js.Global().Call("addEventListener", "message", onMessageFunc)
-	js.Global().Call("postMessage", map[string]any{"type": "ready"})
+	global.Call("addEventListener", "message", onMessageFunc)
+	global.Call("postMessage", map[string]any{"type": "ready"})
 
 	for {
 		var o protocol.Output
@@ -84,7 +85,7 @@ func main() {
 			log.Fatalf("could not decode data: %s", err)
 		}
 
-		js.Global().Call(
+		global.Call(
 			"postMessage",
 			[]any{
 				map[string]any{
@@ -236,7 +237,7 @@ func makeError(msg string) js.Error {
 }
 
 func scaleCellSize(cellSize float64) float64 {
-	return math.Round(2 + 0.38*cellSize)
+	return math.Round(2 + 0.58*cellSize)
 }
 
 func sendClientMessage(msg protocol.ClientMessage) error {

@@ -17,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var srv *http.Server
+
 type ServerConfig interface {
 	Port() uint
 	WorldSize() uint
@@ -36,6 +38,10 @@ type listener struct {
 }
 
 func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engine) *http.Server {
+	if srv != nil {
+		return srv
+	}
+
 	s := &server{
 		cfg:       cfg,
 		db:        db,
@@ -43,7 +49,7 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 		listeners: make(map[*listener]struct{}),
 	}
 
-	server := &http.Server{
+	srv = &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port()),
 		Handler:           s.registerRoutes(),
 		IdleTimeout:       time.Minute,
@@ -71,7 +77,7 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 	}()
 	go engine.Start()
 
-	return server
+	return srv
 }
 
 func (s *server) addListener(l *listener) {

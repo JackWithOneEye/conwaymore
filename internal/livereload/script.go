@@ -9,7 +9,7 @@ type livereloadScriptConfig struct {
 }
 
 const livereloadScript = `
-  const socketUrl = "ws://" + location.host + "/{{.Path}}";
+  const socketUrl = "ws://" + location.host + "{{.Path}}";
   const retryInterval = {{.RetryInterval}};
   const maxRetries = {{.MaxRetries}};
   const ws = new WebSocket(socketUrl);

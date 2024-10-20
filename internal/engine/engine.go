@@ -70,7 +70,7 @@ func (e *engine) Speed() uint32 {
 }
 
 func (e *engine) Start() {
-	ticker := time.NewTicker(time.Duration(e.speed.Load()) * time.Millisecond)
+	ticker := time.NewTicker(e.speedAsDuration())
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -79,7 +79,7 @@ func (e *engine) Start() {
 			e.generateOutput()
 		}
 		if e.speedChanged.Load() {
-			ticker.Reset(time.Duration(e.speed.Load()) * time.Millisecond)
+			ticker.Reset(e.speedAsDuration())
 			e.speedChanged.Store(false)
 		}
 	}
@@ -98,7 +98,6 @@ func (e *engine) SubmitMessage(b []byte) error {
 		err = e.handleSetCells(t)
 	case *protocol.SetSpeed:
 		err = e.handleSetSpeed(t)
-
 	}
 
 	if err != nil {
@@ -214,4 +213,8 @@ func (e *engine) setSeed(seed []byte) error {
 		e.conway.SetCell(c.X, c.Y, c.Colour, c.Age)
 	}
 	return nil
+}
+
+func (e *engine) speedAsDuration() time.Duration {
+	return time.Duration(e.speed.Load()) * time.Millisecond
 }
