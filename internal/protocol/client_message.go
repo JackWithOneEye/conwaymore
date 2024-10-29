@@ -68,14 +68,14 @@ func (c *Command) decode(b []byte) error {
 
 type SetCells struct {
 	Count uint8
-	Cells []*Cell
+	Cells []Cell
 }
 
 func (sc *SetCells) Encode() []byte {
 	b := make([]byte, 2+len(sc.Cells)*bytesPerCell)
 	b[0] = byte(setCells)
 	b[1] = byte(sc.Count)
-	encodeCells(sc.Cells, b, 2)
+	encodeCells(sc.Cells, uint32(sc.Count), b, 2)
 	return b
 }
 
@@ -91,7 +91,7 @@ func (sc *SetCells) decode(b []byte) error {
 		return errors.New("[SetCells] byte length does not match cells count")
 	}
 
-	sc.Cells = make([]*Cell, sc.Count)
+	sc.Cells = make([]Cell, sc.Count)
 	decodeCells(b, sc.Cells, 2)
 	return nil
 }

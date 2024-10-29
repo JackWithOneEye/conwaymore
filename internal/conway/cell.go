@@ -77,3 +77,9 @@ func (cn *cellCandidate) create() {
 	}
 	cn.colour = (n0.colour & 0xff0000) | (n1.colour & 0x00ff00) | (n2.colour & 0x0000ff)
 }
+
+func (cn *cellCandidate) markAsAlive(cell *aliveCell) {
+	cn.colour = cell.colour
+	cn.age = cell.age
+	cn.alive = true
+}

@@ -7,10 +7,11 @@ type Cell struct {
 	Colour    uint32
 }
 
-func encodeCells(src []*Cell, dest []byte, destOffset uint) {
+func encodeCells(src []Cell, cellsCount uint32, dest []byte, destOffset uint) {
 	dsti := destOffset
-	for i := range src {
+	for i := range cellsCount {
 		cell := src[i]
+
 		dest[dsti] = byte((cell.X >> 8) & 0xff)
 		dsti += 1
 		dest[dsti] = byte(cell.X & 0xff)
@@ -35,7 +36,7 @@ func encodeCells(src []*Cell, dest []byte, destOffset uint) {
 	}
 }
 
-func decodeCells(src []byte, dest []*Cell, srcOffset uint) {
+func decodeCells(src []byte, dest []Cell, srcOffset uint) {
 	srci := srcOffset
 	for i := range dest {
 		x := (uint16(src[srci]) << 8) & 0xff00
@@ -60,6 +61,6 @@ func decodeCells(src []byte, dest []*Cell, srcOffset uint) {
 		a = a | uint16(src[srci])
 		srci += 1
 
-		dest[i] = &Cell{X: x, Y: y, Colour: c, Age: a}
+		dest[i] = Cell{X: x, Y: y, Colour: c, Age: a}
 	}
 }

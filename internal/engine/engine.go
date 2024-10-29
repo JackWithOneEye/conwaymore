@@ -37,13 +37,16 @@ type engine struct {
 	speedChanged atomic.Bool
 	state        atomic.Uint32
 	mutex        sync.RWMutex
+	outputCells  []protocol.Cell
 	outputChan   chan []byte
 }
 
 func NewEngine(cfg EngineConfig, seed []byte) Engine {
+	ws := cfg.WorldSize()
 	e := &engine{
-		conway:     conway.NewConway(cfg),
-		outputChan: make(chan []byte, 1),
+		conway:      conway.NewConway(cfg),
+		outputCells: make([]protocol.Cell, ws*ws),
+		outputChan:  make(chan []byte, 1),
 	}
 
 	e.speed.Store(100)
@@ -119,22 +122,21 @@ func (e *engine) generateOutput() {
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
 
-	cellsCount := e.conway.CellsCount()
-	o := &protocol.Output{
-		CellsCount: uint32(cellsCount),
+	output := &protocol.Output{
+		CellsCount: uint32(e.conway.CellsCount()),
 		Playing:    e.state.Load() == playing,
 		Speed:      uint16(e.speed.Load()),
-		Cells:      make([]*protocol.Cell, cellsCount),
+		Cells:      e.outputCells,
 	}
 
 	i := 0
 	for cell := range e.conway.Cells() {
 		x, y, colour, age := cell.Values()
-		o.Cells[i] = &protocol.Cell{X: x, Y: y, Colour: colour, Age: age}
+		e.outputCells[i] = protocol.Cell{X: x, Y: y, Colour: colour, Age: age}
 		i += 1
 	}
 
-	e.outputChan <- o.Encode()
+	e.outputChan <- output.Encode()
 }
 
 func (e *engine) handleCommand(c *protocol.Command) error {

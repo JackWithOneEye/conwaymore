@@ -18,7 +18,7 @@ import (
 var (
 	initialised = false
 
-	cellsCache []*protocol.Cell = nil
+	cellsCache []protocol.Cell = nil
 
 	ctx  = context.Background()
 	conn *websocket.Conn
@@ -168,11 +168,11 @@ func handleSetCells(data js.Value) js.Value {
 	}
 	sc := &protocol.SetCells{
 		Count: uint8(count),
-		Cells: make([]*protocol.Cell, count),
+		Cells: make([]protocol.Cell, count),
 	}
 	var sci uint
 	for i := 0; i < len(cs); i += 4 {
-		sc.Cells[sci] = &protocol.Cell{
+		sc.Cells[sci] = protocol.Cell{
 			X:      originCx + ((uint16(cs[i])<<8)&0xff00 | uint16(cs[i+1])&0xff),
 			Y:      originCy + ((uint16(cs[i+2])<<8)&0xff00 | uint16(cs[i+3])&0xff),
 			Colour: colour,

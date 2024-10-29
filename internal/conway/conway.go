@@ -41,9 +41,9 @@ func NewConway(cfg ConwayConfig) Conway {
 	}
 }
 
-func (e *conway) CanSetCell(x, y uint16) bool {
-	for i := 0; i < int(e.numAliveCells); i++ {
-		cell := &e.output[i]
+func (c *conway) CanSetCell(x, y uint16) bool {
+	for i := 0; i < int(c.numAliveCells); i++ {
+		cell := &c.output[i]
 		if cell.x == x && cell.y == y {
 			return false
 		}
@@ -51,37 +51,37 @@ func (e *conway) CanSetCell(x, y uint16) bool {
 	return true
 }
 
-func (e *conway) Clear() {
-	e.numAliveCells = 0
+func (c *conway) Clear() {
+	c.numAliveCells = 0
 }
 
-func (e *conway) Cells() iter.Seq[Cell] {
+func (c *conway) Cells() iter.Seq[Cell] {
 	return func(yield func(Cell) bool) {
-		for i := range e.numAliveCells {
-			if !yield(&e.output[i]) {
+		for i := range c.numAliveCells {
+			if !yield(&c.output[i]) {
 				return
 			}
 		}
 	}
 }
 
-func (e *conway) CellsCount() uint {
-	return uint(e.numAliveCells)
+func (c *conway) CellsCount() uint {
+	return uint(c.numAliveCells)
 }
 
-func (e *conway) NextGen() {
-	candidates := make(map[uint32]*cellCandidate, e.numAliveCells)
+func (c *conway) NextGen() {
+	candidates := make(map[uint32]*cellCandidate, c.numAliveCells)
 
-	for i := 0; i < int(e.numAliveCells); i++ {
-		cell := &e.output[i]
+	for i := range c.numAliveCells {
+		cell := &c.output[i]
 
 		x := cell.x
-		xLeft := (x - 1) & e.wrapMask
-		xRight := (x + 1) & e.wrapMask
+		xLeft := (x - 1) & c.wrapMask
+		xRight := (x + 1) & c.wrapMask
 
 		y := cell.y
-		yUp := (y - 1) & e.wrapMask
-		yDown := (y + 1) & e.wrapMask
+		yUp := (y - 1) & c.wrapMask
+		yDown := (y + 1) & c.wrapMask
 
 		setNeighbourAsCandidate(cell, xLeft, yUp, candidates)
 		setNeighbourAsCandidate(cell, x, yUp, candidates)
@@ -96,7 +96,7 @@ func (e *conway) NextGen() {
 		setNeighbourAsCandidate(cell, xRight, yDown, candidates)
 	}
 
-	var numAlive uint32 = 0
+	c.numAliveCells = 0
 	for _, cand := range candidates {
 		if cand.count < 2 || cand.count > 3 {
 			continue
@@ -110,34 +110,31 @@ func (e *conway) NextGen() {
 			cand.age += 1
 		}
 
-		cell := &e.output[numAlive]
-		cell.set(cand.x, cand.y, cand.colour, cand.age)
-		numAlive += 1
+		c.output[c.numAliveCells].set(cand.x, cand.y, cand.colour, cand.age)
+		c.numAliveCells += 1
 	}
-
-	e.numAliveCells = numAlive
 }
 
-func (e *conway) Randomise() {
-	e.Clear()
+func (c *conway) Randomise() {
+	c.Clear()
 
-	al := uint16(e.axisLength)
+	al := uint16(c.axisLength)
 	for x := range al {
 		for y := range al {
 			if rand.UintN(2) != 1 {
 				continue
 			}
 			colour := rand.Uint32N(0xffffff) + 1
-			e.output[e.numAliveCells].set(x, y, colour, 0)
-			e.numAliveCells += 1
+			c.output[c.numAliveCells].set(x, y, colour, 0)
+			c.numAliveCells += 1
 		}
 	}
 }
 
-func (e *conway) SetCell(x, y uint16, colour uint32, age uint16) {
-	ac := &e.output[e.numAliveCells]
+func (c *conway) SetCell(x, y uint16, colour uint32, age uint16) {
+	ac := &c.output[c.numAliveCells]
 	ac.set(x, y, colour, age)
-	e.numAliveCells += 1
+	c.numAliveCells += 1
 }
 
 func makeCoord(x, y uint16) uint32 {
@@ -146,11 +143,9 @@ func makeCoord(x, y uint16) uint32 {
 
 func setCellAsCandidate(cell *aliveCell, candidates map[uint32]*cellCandidate) {
 	coord := makeCoord(cell.x, cell.y)
-	cand := candidates[coord]
-	if cand != nil {
-		cand.colour = cell.colour
-		cand.age = cell.age
-		cand.alive = true
+	cand, ok := candidates[coord]
+	if ok {
+		cand.markAsAlive(cell)
 		return
 	}
 	candidates[coord] = &cellCandidate{
@@ -166,8 +161,8 @@ func setCellAsCandidate(cell *aliveCell, candidates map[uint32]*cellCandidate) {
 
 func setNeighbourAsCandidate(cell *aliveCell, x, y uint16, candidates map[uint32]*cellCandidate) {
 	coord := makeCoord(x, y)
-	cand := candidates[coord]
-	if cand != nil {
+	cand, ok := candidates[coord]
+	if ok {
 		cand.addNeighbour(cell)
 		return
 	}

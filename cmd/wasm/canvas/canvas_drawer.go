@@ -12,7 +12,7 @@ import (
 )
 
 type CanvasDrawer interface {
-	Draw(cells []*protocol.Cell)
+	Draw(cells []protocol.Cell)
 	IncrementOffset(x, y float64)
 	PixelToCellCoord(px, py int) (x, y uint16)
 	SetCellSize(cellSize float64)
@@ -78,7 +78,7 @@ func NewCanvasDrawer(canvas js.Value, axisLength, cellSize int, height, width fl
 	return cd
 }
 
-func (cd *canvasDrawer) Draw(cells []*protocol.Cell) {
+func (cd *canvasDrawer) Draw(cells []protocol.Cell) {
 	// start := time.Now()
 	// defer func() {
 	// 	dur := time.Since(start).Microseconds()
@@ -94,7 +94,7 @@ func (cd *canvasDrawer) Draw(cells []*protocol.Cell) {
 	for i := range cells {
 		c := cells[i]
 		if cd.coordIsVisible(c.X, c.Y) {
-			cd.drawCell(c)
+			cd.drawCell(&c)
 		}
 	}
 }

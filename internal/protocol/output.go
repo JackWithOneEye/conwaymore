@@ -2,16 +2,18 @@ package protocol
 
 import "errors"
 
+const cellsOffset = 6
+
 type Output struct {
-	Cells      []*Cell
+	Cells      []Cell
 	CellsCount uint32
 	Playing    bool
 	Speed      uint16
 }
 
 func (o *Output) Encode() []byte {
-	cellsCount := uint32(len(o.Cells))
-	b := make([]byte, 1+2+3+cellsCount*bytesPerCell)
+	cellsCount := o.CellsCount
+	b := make([]byte, cellsOffset+cellsCount*bytesPerCell)
 
 	if o.Playing {
 		b[0] = 1
@@ -24,14 +26,14 @@ func (o *Output) Encode() []byte {
 	b[4] = byte((cellsCount & 0xff00) >> 8)
 	b[5] = byte(cellsCount & 0xff)
 
-	encodeCells(o.Cells, b, 6)
+	encodeCells(o.Cells, o.CellsCount, b, 6)
 
 	return b
 }
 
 func (o *Output) Decode(b []byte) error {
 	l := len(b)
-	if l < 6 {
+	if l < cellsOffset {
 		return errors.New("too short")
 	}
 	if b[0] == 1 {
@@ -44,9 +46,9 @@ func (o *Output) Decode(b []byte) error {
 		return errors.New("byte length deos not match cells count")
 	}
 
-	o.Cells = make([]*Cell, o.CellsCount)
+	o.Cells = make([]Cell, o.CellsCount)
 
-	decodeCells(b, o.Cells, 6)
+	decodeCells(b, o.Cells, cellsOffset)
 
 	return nil
 }
