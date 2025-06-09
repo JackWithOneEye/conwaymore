@@ -24,26 +24,20 @@ type service struct {
 	db  *sql.DB
 }
 
-var dbInstance *service
-
 func NewDatabaseService(cfg DatabaseConfig) DatabaseService {
-	if dbInstance != nil {
-		return dbInstance
-	}
-
 	db, err := sql.Open("sqlite3", cfg.DBUrl())
 	if err != nil {
 		panic(fmt.Sprintf("could not open database %s", err))
 	}
 
-	dbInstance = &service{cfg, db}
+	s := &service{cfg, db}
 
 	_, err = db.Exec("CREATE TABLE IF NOT EXISTS conway (id INTEGER PRIMARY KEY AUTOINCREMENT, seed text NOT NULL)")
 	if err != nil {
 		panic(fmt.Sprintf("could not initialise database %s", err))
 	}
 
-	return dbInstance
+	return s
 }
 
 func (s *service) Close() error {

@@ -20,6 +20,8 @@ export declare type CanvasDragMessage = {
 export declare type CellSizeChangeMessage = {
     type: typeof CanvasWorkerMessageType.CellSizeChange;
     cellSize: number;
+    mouseX: number;
+    mouseY: number;
 };
 
 export declare type CommandMessage = {

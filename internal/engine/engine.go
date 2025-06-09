@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -32,6 +33,7 @@ const (
 )
 
 type engine struct {
+	ctx          context.Context
 	conway       conway.Conway
 	speed        atomic.Uint32 // ms
 	speedChanged atomic.Bool
@@ -41,9 +43,10 @@ type engine struct {
 	outputChan   chan []byte
 }
 
-func NewEngine(cfg EngineConfig, seed []byte) Engine {
+func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
 	ws := cfg.WorldSize()
 	e := &engine{
+		ctx:         ctx,
 		conway:      conway.NewConway(cfg),
 		outputCells: make([]protocol.Cell, ws*ws),
 		outputChan:  make(chan []byte, 1),
@@ -76,14 +79,19 @@ func (e *engine) Start() {
 	ticker := time.NewTicker(e.speedAsDuration())
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if e.state.Load() == playing {
-			e.calcNextGen()
-			e.generateOutput()
-		}
-		if e.speedChanged.Load() {
-			ticker.Reset(e.speedAsDuration())
-			e.speedChanged.Store(false)
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-ticker.C:
+			if e.state.Load() == playing {
+				e.calcNextGen()
+				e.generateOutput()
+			}
+			if e.speedChanged.Load() {
+				ticker.Reset(e.speedAsDuration())
+				e.speedChanged.Store(false)
+			}
 		}
 	}
 }

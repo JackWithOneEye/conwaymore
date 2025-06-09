@@ -120,6 +120,8 @@ func handleCanvasDrag(data js.Value) {
 func handleCellSizeChange(data js.Value) {
 	drawer.SetCellSize(
 		scaleCellSize(data.Get("cellSize").Float()),
+		data.Get("mouseX").Float(),
+		data.Get("mouseY").Float(),
 	)
 }
 
@@ -167,7 +169,7 @@ func handleSetCells(data js.Value) js.Value {
 		return makeError("setCells: byte length does not match cells count").Value
 	}
 	sc := &protocol.SetCells{
-		Count: uint8(count),
+		Count: uint16(count),
 		Cells: make([]protocol.Cell, count),
 	}
 	var sci uint

@@ -13,3 +13,7 @@ build:
 clean:
 	@echo "Cleaning..."
 	@rm -f main
+
+.PHONY: test-integration
+test-integration:
+	go test -v ./tests/integration/...

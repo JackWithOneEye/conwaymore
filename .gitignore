@@ -38,3 +38,4 @@ cmd/web/assets/css
 # Misc.
 node_modules/
 test.db
+.DS_Store

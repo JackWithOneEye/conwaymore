@@ -23,9 +23,9 @@ func main() {
 		log.Fatalf("could not get seed: %s", err)
 	}
 
-	engine := engine.NewEngine(cfg, seed)
+	engine := engine.NewEngine(cfg, seed, ctx)
 
-	s := server.NewServer(cfg, dbs, engine)
+	s := server.NewServer(cfg, dbs, engine, ctx)
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -44,5 +44,12 @@ func main() {
 	ctx2, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
-	s.Shutdown(ctx2)
+	err = s.Shutdown(ctx2)
+	if err != nil {
+		log.Printf("could not shutdown server: %v", err)
+	}
+	err = dbs.Close()
+	if err != nil {
+		log.Printf("could not close database: %v", err)
+	}
 }

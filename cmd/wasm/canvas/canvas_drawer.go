@@ -15,7 +15,7 @@ type CanvasDrawer interface {
 	Draw(cells []protocol.Cell)
 	IncrementOffset(x, y float64)
 	PixelToCellCoord(px, py int) (x, y uint16)
-	SetCellSize(cellSize float64)
+	SetCellSize(cellSize float64, mouseX, mouseY float64)
 	SetDimensions(height, width float64)
 	SetSettings(age bool, grid bool)
 }
@@ -129,11 +129,38 @@ func (cd *canvasDrawer) PixelToCellCoord(px, py int) (x, y uint16) {
 	return
 }
 
-func (cd *canvasDrawer) SetCellSize(cellSize float64) {
+func (cd *canvasDrawer) SetCellSize(cellSize float64, mouseX, mouseY float64) {
+	// Calculate the cell coordinates to zoom around
+	var cellX, cellY float64
+	if mouseX < 0 || mouseY < 0 {
+		// If no mouse position provided, zoom around center
+		height, width := cd.cachedDim.values()
+		cellX = (width/2 - cd.xOffset) * cd.cellSizeInv
+		cellY = (height/2 - cd.yOffset) * cd.cellSizeInv
+	} else {
+		// Zoom around mouse position
+		cellX = (mouseX - cd.xOffset) * cd.cellSizeInv
+		cellY = (mouseY - cd.yOffset) * cd.cellSizeInv
+	}
+
+	// Update cell size related properties
 	cd.cellSize = cellSize
 	cd.cellSizeInv = 1 / cellSize
 	cd.worldSize = cellSize * float64(cd.axisLength)
-	cd.IncrementOffset(0, 0)
+
+	// Calculate new offsets
+	var newXOffset, newYOffset float64
+	if mouseX < 0 || mouseY < 0 {
+		height, width := cd.cachedDim.values()
+		newXOffset = width/2 - cellX*cellSize
+		newYOffset = height/2 - cellY*cellSize
+	} else {
+		newXOffset = mouseX - cellX*cellSize
+		newYOffset = mouseY - cellY*cellSize
+	}
+
+	// Use IncrementOffset to adjust the offsets
+	cd.IncrementOffset(newXOffset-cd.xOffset, newYOffset-cd.yOffset)
 }
 
 func (cd *canvasDrawer) SetDimensions(height, width float64) {
@@ -222,7 +249,7 @@ func (cd *canvasDrawer) drawCell(cell *protocol.Cell) {
 
 	if drawXCount == 1 {
 		drawX1 = pxStart + gridLineWidth
-		drawWidth1 = cd.cellSize // - gridLineWidth
+		drawWidth1 = cd.cellSize - gridLineWidth
 	}
 
 	pyStart := float64(cell.Y)*cd.cellSize + cd.yOffset
@@ -257,7 +284,7 @@ func (cd *canvasDrawer) drawCell(cell *protocol.Cell) {
 
 	if drawYCount == 1 {
 		drawY1 = pyStart + gridLineWidth
-		drawHeight1 = cd.cellSize // - gridLineWidth
+		drawHeight1 = cd.cellSize - gridLineWidth
 	}
 
 	if cd.drawMode == drawAge {

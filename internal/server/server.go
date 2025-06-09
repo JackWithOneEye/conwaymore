@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,8 +17,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 )
-
-var srv *http.Server
 
 type ServerConfig interface {
 	Port() uint
@@ -37,11 +36,7 @@ type listener struct {
 	msgs chan []byte
 }
 
-func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engine) *http.Server {
-	if srv != nil {
-		return srv
-	}
-
+func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engine, ctx context.Context) *http.Server {
 	s := &server{
 		cfg:       cfg,
 		db:        db,
@@ -49,7 +44,7 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 		listeners: make(map[*listener]struct{}),
 	}
 
-	srv = &http.Server{
+	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port()),
 		Handler:           s.registerRoutes(),
 		IdleTimeout:       time.Minute,
@@ -58,21 +53,25 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 
 	go func() {
 		for {
-			o, ok := <-engine.Output()
-			if !ok {
-				continue
-			}
-			s.lastOutput.Store(&o)
-
-			s.listenersMtx.Lock()
-			for l := range s.listeners {
-				select {
-				case l.msgs <- o:
-				default:
-					log.Println("TOO SLOW!!!")
+			select {
+			case <-ctx.Done():
+				return
+			case o, ok := <-engine.Output():
+				if !ok {
+					continue
 				}
+				s.lastOutput.Store(&o)
+
+				s.listenersMtx.Lock()
+				for l := range s.listeners {
+					select {
+					case l.msgs <- o:
+					default:
+						log.Println("TOO SLOW!!!")
+					}
+				}
+				s.listenersMtx.Unlock()
 			}
-			s.listenersMtx.Unlock()
 		}
 	}()
 	go engine.Start()
