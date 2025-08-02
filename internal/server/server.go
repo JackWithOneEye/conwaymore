@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/JackWithOneEye/conwaymore/internal/database"
 	"github.com/JackWithOneEye/conwaymore/internal/engine"
 	"github.com/JackWithOneEye/conwaymore/internal/livereload"
+	"github.com/JackWithOneEye/conwaymore/internal/patterns"
 	"github.com/a-h/templ"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -110,8 +112,32 @@ func (s *server) registerRoutes() http.Handler {
 	}))
 
 	r.GET("/game", func(c *gin.Context) {
-		templ.Handler(web.Game("#ffffff", 30, float64(s.engine.Speed()), s.engine.Playing())).ServeHTTP(c.Writer, c.Request)
+		templ.Handler(web.Game("#ffffff", 30, float64(s.engine.Speed()), s.engine.Playing(), patterns.Patterns)).ServeHTTP(c.Writer, c.Request)
 	})
+
+	r.GET("/globals", func(c *gin.Context) {
+		w := c.Writer
+		d, err := json.Marshal(globals)
+		if err != nil {
+			log.Printf("could not marshal globals: %s", err)
+			c.String(http.StatusInternalServerError, "error")
+			return
+		}
+		w.Write(d)
+		w.Flush()
+	})
+	//
+	// r.GET("/patterns", func(c *gin.Context) {
+	// 	w := c.Writer
+	// 	d, err := json.Marshal(patterns)
+	// 	if err != nil {
+	// 		log.Printf("could not marshal patterns: %s", err)
+	// 		c.String(http.StatusInternalServerError, "error")
+	// 		return
+	// 	}
+	// 	w.Write(d)
+	// 	w.Flush()
+	// })
 
 	r.GET("/play", s.playHandler)
 
@@ -138,7 +164,6 @@ func (s *server) playHandler(c *gin.Context) {
 	w := c.Writer
 	r := c.Request
 	socket, err := websocket.Accept(w, r, nil)
-
 	if err != nil {
 		log.Printf("could not open websocket: %s", err)
 		_, _ = w.Write([]byte("could not open websocket"))
@@ -148,7 +173,10 @@ func (s *server) playHandler(c *gin.Context) {
 	defer socket.CloseNow()
 
 	readerMsgChan := make(chan []byte)
+	defer close(readerMsgChan)
 	readerErrChan := make(chan error)
+	defer close(readerErrChan)
+
 	reader := func() {
 		_, data, err := socket.Read(c)
 		if err != nil {

@@ -1,7 +1,8 @@
+/** @import { Pattern } from './patterns' */
 /** @import { CanvasDragState, Globals, PatternDragState } from './types/ui' */
 /** @import { CanvasWorkerEvent, CanvasWorkerInitMessage, CanvasWorkerMessage } from './types/worker' */
-import { Patterns } from './patterns';
 import { getElementByIdOrDie } from './helpers';
+import { getPatterns } from './patterns';
 import { computed, effect, reactive, signal } from './signals';
 import { CanvasWorkerEventType, CanvasWorkerMessageType, Command } from './types/enums';
 
@@ -11,6 +12,7 @@ if (!globalsEl.textContent) {
 }
 /** @type {Globals} */
 const { WorldSize } = JSON.parse(globalsEl.textContent);
+const Patterns = getPatterns();
 
 const canvasWorker = new Worker('/assets/js/worker.js', { type: 'module' });
 
@@ -79,16 +81,16 @@ const App = {
     });
     const patternTemplate = /** @type {HTMLTemplateElement} */ (getElementByIdOrDie('pattern-template'));
     const fragment = document.createDocumentFragment();
-    for (const [type, pattern] of Object.entries(Patterns)) {
+    for (const [type, pattern] of Patterns.entries()) {
       const patternEl = /** @type {Element} */ (patternTemplate.content.cloneNode(true)).firstElementChild;
       if (!patternEl) {
         throw new Error('failed to clone pattern template')
       }
       const [span] = patternEl.getElementsByTagName('span');
       span.textContent = pattern.name;
-            /** @type {HTMLDivElement} */ (patternEl).addEventListener(
+      /** @type {HTMLDivElement} */ (patternEl).addEventListener(
         'dragstart',
-        (e) => App.dragPattern.start(e, /** @type {import('./patterns').PatternType} */(type))
+        (e) => App.dragPattern.start(e, type)
       );
       fragment.appendChild(patternEl);
     }
@@ -97,8 +99,8 @@ const App = {
     App.$.cellSize.addEventListener('input', () => {
       const cellSize = Number(App.$.cellSize.value);
       App.$.cellSizeLabel.textContent = App.$.cellSize.value;
-      canvasWorkerMessage({ 
-        type: CanvasWorkerMessageType.CellSizeChange, 
+      canvasWorkerMessage({
+        type: CanvasWorkerMessageType.CellSizeChange,
         cellSize,
         mouseX: -1,
         mouseY: -1
@@ -176,12 +178,10 @@ const App = {
       if (!patternType) {
         return;
       }
-      const { coordinates: { bytes, count } } = Patterns[patternType];
       canvasWorkerMessage({
-        type: CanvasWorkerMessageType.SetCells,
-        count,
+        type: CanvasWorkerMessageType.SetPattern,
+        patternType,
         colour: App.cellColour.state(),
-        coordinates: bytes,
         originPx: e.offsetX,
         originPy: e.offsetY
       });
@@ -191,18 +191,18 @@ const App = {
       const rect = App.$.canvas.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
-      
+
       const currentCellSize = Number(App.$.cellSize.value);
-      const zoomFactor = currentCellSize <= 5 
+      const zoomFactor = currentCellSize <= 5
         ? (e.deltaY > 0 ? 0.5 : 1.5)
         : (e.deltaY > 0 ? 0.9 : 1.1);
       const newCellSize = Math.max(1, Math.min(100, Math.round(currentCellSize * zoomFactor)));
-      
+
       if (newCellSize !== currentCellSize) {
         App.$.cellSize.value = String(newCellSize);
         App.$.cellSizeLabel.textContent = String(newCellSize);
-        canvasWorkerMessage({ 
-          type: CanvasWorkerMessageType.CellSizeChange, 
+        canvasWorkerMessage({
+          type: CanvasWorkerMessageType.CellSizeChange,
           cellSize: newCellSize,
           mouseX,
           mouseY
@@ -299,7 +299,7 @@ const App = {
     state: reactive(/** @type {PatternDragState} */({ canvasDragOver: false, type: null })),
     /**
      * @param {DragEvent} event 
-     * @param {import('./patterns').PatternType} type 
+     * @param {string} type 
      */
     start(event, type) {
       if (event.dataTransfer) {

@@ -39,3 +39,4 @@ cmd/web/assets/css
 node_modules/
 test.db
 .DS_Store
+debug.log

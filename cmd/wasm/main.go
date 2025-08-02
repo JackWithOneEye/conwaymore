@@ -11,6 +11,7 @@ import (
 	"syscall/js"
 
 	"github.com/JackWithOneEye/conwaymore/cmd/wasm/canvas"
+	"github.com/JackWithOneEye/conwaymore/internal/patterns"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	"github.com/coder/websocket"
 )
@@ -32,8 +33,10 @@ var (
 
 	drawHandle = js.Null()
 	drawFunc   = js.FuncOf(func(this js.Value, args []js.Value) any {
-		drawer.Draw(cellsCache)
-		drawHandle = js.Null()
+		if drawer != nil {
+			drawer.Draw(cellsCache)
+			drawHandle = js.Null()
+		}
 		return js.Undefined()
 	})
 
@@ -49,6 +52,7 @@ const (
 	msgCommand
 	msgResize
 	msgSetCells
+	msgSetPattern
 	msgSetSpeed
 	msgSettingsChange
 )
@@ -188,6 +192,37 @@ func handleSetCells(data js.Value) js.Value {
 	return js.Undefined()
 }
 
+func handleSetPattern(data js.Value) js.Value {
+	colour := uint32(data.Get("colour").Int())
+	originPx := data.Get("originPx").Int()
+	originPy := data.Get("originPy").Int()
+	patternType := data.Get("patternType").String()
+	pattern, ok := patterns.Patterns[patternType]
+	if !ok {
+		return makeError(fmt.Sprintf("setPattern: pattern '%s' does not exist", patternType)).Value
+	}
+
+	originCx, originCy := drawer.PixelToCellCoord(originPx, originPy)
+	count := len(pattern.Cells)
+
+	sc := &protocol.SetCells{
+		Count: uint16(count),
+		Cells: make([]protocol.Cell, count),
+	}
+	for i, c := range pattern.Cells {
+		sc.Cells[i] = protocol.Cell{
+			X:      originCx + c.X,
+			Y:      originCy + c.Y,
+			Colour: colour,
+		}
+	}
+	err := sendClientMessage(sc)
+	if err != nil {
+		return makeError(fmt.Sprintf("setPattern write failed: %s", err)).Value
+	}
+	return js.Undefined()
+}
+
 func handleSetSpeed(data js.Value) js.Value {
 	sp := &protocol.SetSpeed{
 		Speed: uint16(data.Get("speed").Int()),
@@ -220,6 +255,8 @@ func onMessage(msgEvt js.Value) js.Value {
 		handleResize(data)
 	case msgSetCells:
 		return handleSetCells(data)
+	case msgSetPattern:
+		return handleSetPattern(data)
 	case msgSetSpeed:
 		return handleSetSpeed(data)
 	case msgSettingsChange:

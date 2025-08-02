@@ -3,12 +3,20 @@ package main
 import (
 	"fmt"
 	"log"
-	"runtime"
+	"os/exec"
 
 	"github.com/evanw/esbuild/pkg/api"
 )
 
 func main() {
+	cmd := exec.Command("go", "env", "GOROOT")
+	stdout, err := cmd.Output()
+	if err != nil {
+		log.Fatalf("get GOROOT command failed (%v)", err)
+	}
+	out := string(stdout)
+	goroot := out[:len(out)-1]
+
 	buildOpts := api.BuildOptions{
 		EntryPointsAdvanced: []api.EntryPoint{
 			{
@@ -24,7 +32,7 @@ func main() {
 				OutputPath: "worker",
 			},
 			{
-				InputPath:  fmt.Sprintf("%s/misc/wasm/wasm_exec.js", runtime.GOROOT()),
+				InputPath:  fmt.Sprintf("%s/lib/wasm/wasm_exec.js", goroot),
 				OutputPath: "wasm_exec",
 			},
 		},

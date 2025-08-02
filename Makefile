@@ -14,6 +14,9 @@ clean:
 	@echo "Cleaning..."
 	@rm -f main
 
-.PHONY: test-integration
+.PHONY: test-integration terminal
 test-integration:
 	go test -v ./tests/integration/...
+
+terminal:
+	go run cmd/terminal/main.go
