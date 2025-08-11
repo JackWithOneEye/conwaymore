@@ -4,10 +4,10 @@
 package canvas
 
 import (
-	"fmt"
 	"math"
 	"syscall/js"
 
+	"github.com/JackWithOneEye/conwaymore/internal/lrucache"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 )
 
@@ -15,13 +15,15 @@ type CanvasDrawer interface {
 	Draw(cells []protocol.Cell)
 	IncrementOffset(x, y float64)
 	PixelToCellCoord(px, py int) (x, y uint16)
-	SetCellSize(cellSize float64, mouseX, mouseY float64)
-	SetDimensions(height, width float64)
+	SetCellSize(cellSize, mouseX, mouseY int)
+	SetDimensions(height, width int)
 	SetSettings(age bool, grid bool)
+	SumCoords(coords ...uint16) uint16
 }
 
 const (
 	gridLineWidth = 0.5
+	gridMinPx     = 3 // hide grid automatically below this size
 )
 
 type drawMode uint
@@ -36,7 +38,7 @@ var global = js.Global()
 type canvasDrawer struct {
 	axisLength  uint16
 	canvas      js.Value // OffscreenCanvas
-	cellSize    float64
+	cellSize    int
 	cellSizeInv float64
 	ctx         js.Value // OffscreenCanvasRenderingContext2D
 	wrapMask    uint16
@@ -46,31 +48,41 @@ type canvasDrawer struct {
 
 	xBoundary coordBoundary
 	yBoundary coordBoundary
-	worldSize float64
-
-	cachedDim canvasDim
+	worldSize int
 
 	drawMode drawMode
 	grid     bool
+
+	// ImageData batch rendering
+	imageData    js.Value
+	pixelCount   int
+	byteBuffer   []byte // Reusable buffer for uint32->byte conversion
+	canvasWidth  int
+	canvasHeight int
+
+	// Color cache to avoid repeated fmt.Sprintf
+	colorCache lrucache.LruCache[uint32, string]
 }
 
-func NewCanvasDrawer(canvas js.Value, axisLength, cellSize int, height, width float64) CanvasDrawer {
+func NewCanvasDrawer(canvas js.Value, axisLength, cellSize, height, width int) CanvasDrawer {
 	ctx := canvas.Call("getContext", "2d", map[string]any{"alpha": false})
 
 	cd := &canvasDrawer{
 		axisLength:  uint16(axisLength),
 		canvas:      canvas,
-		cellSize:    float64(cellSize),
+		cellSize:    cellSize,
 		cellSizeInv: 1 / float64(cellSize),
 		ctx:         ctx,
 		wrapMask:    uint16(axisLength) - 1,
 
 		xBoundary: coordBoundary{within: true},
 		yBoundary: coordBoundary{within: true},
-		worldSize: float64(cellSize * axisLength),
+		worldSize: cellSize * axisLength,
 
 		drawMode: drawColour,
 		grid:     true,
+
+		colorCache: lrucache.NewLruCache[uint32, string](256),
 	}
 
 	cd.SetDimensions(height, width)
@@ -85,38 +97,56 @@ func (cd *canvasDrawer) Draw(cells []protocol.Cell) {
 	// 	log.Printf("??? %d", dur)
 	// }()
 
-	global.Call("prepareCtx", cd.ctx, 0xffffff, gridLineWidth)
+	// Clear canvas with white background
+	cd.ctx.Set("fillStyle", "#ffffff")
+	cd.ctx.Call("fillRect", 0, 0, cd.canvasWidth, cd.canvasHeight)
 
-	if cd.grid {
-		cd.drawGrid()
+	// Clear byte buffer to prevent ghost cells
+	for i := range cd.byteBuffer {
+		cd.byteBuffer[i] = 0
 	}
 
+	// Batch draw cells to pixel buffer
 	for i := range cells {
 		c := cells[i]
 		if cd.coordIsVisible(c.X, c.Y) {
-			cd.drawCell(&c)
+			cd.drawCellToBuffer(&c)
 		}
+	}
+
+	// Copy pixel buffer to ImageData and draw to canvas
+	data := cd.imageData.Get("data")
+	js.CopyBytesToJS(data, cd.byteBuffer)
+	cd.ctx.Call("putImageData", cd.imageData, 0, 0)
+
+	// Draw grid after ImageData (so it appears on top)
+	showGrid := cd.grid && cd.cellSize >= gridMinPx
+	if showGrid {
+		cd.ctx.Call("beginPath")
+		cd.ctx.Set("strokeStyle", "#cccccc") // Light gray grid
+		cd.ctx.Set("lineWidth", gridLineWidth)
+		cd.drawGrid()
 	}
 }
 
 func (cd *canvasDrawer) IncrementOffset(x, y float64) {
 	ox := cd.xOffset + x
-	for math.Abs(ox) >= cd.worldSize {
+	for math.Abs(ox) >= float64(cd.worldSize) {
 		sgn := 1.0
 		if math.Signbit(ox) {
 			sgn = -1.0
 		}
-		ox = sgn * (math.Abs(ox) - cd.worldSize)
+		ox = sgn * (math.Abs(ox) - float64(cd.worldSize))
 	}
 	cd.xOffset = ox
 
 	oy := cd.yOffset + y
-	for math.Abs(oy) >= cd.worldSize {
+	for math.Abs(oy) >= float64(cd.worldSize) {
 		sgn := 1.0
 		if math.Signbit(oy) {
 			sgn = -1.0
 		}
-		oy = sgn * (math.Abs(oy) - cd.worldSize)
+		oy = sgn * (math.Abs(oy) - float64(cd.worldSize))
 	}
 	cd.yOffset = oy
 
@@ -129,44 +159,46 @@ func (cd *canvasDrawer) PixelToCellCoord(px, py int) (x, y uint16) {
 	return
 }
 
-func (cd *canvasDrawer) SetCellSize(cellSize float64, mouseX, mouseY float64) {
-	// Calculate the cell coordinates to zoom around
-	var cellX, cellY float64
+func (cd *canvasDrawer) SetCellSize(cellSize, mouseX, mouseY int) {
+	cellSize = max(cellSize, 1.0) // Prevent division by zero
+
+	scaling := 1.0 - float64(cellSize)*cd.cellSizeInv
+
+	var newXOffset, newYOffset float64
 	if mouseX < 0 || mouseY < 0 {
 		// If no mouse position provided, zoom around center
-		height, width := cd.cachedDim.values()
-		cellX = (width/2 - cd.xOffset) * cd.cellSizeInv
-		cellY = (height/2 - cd.yOffset) * cd.cellSizeInv
+		halfWidth := float64(cd.canvasWidth) * 0.5
+		halfHeight := float64(cd.canvasHeight) * 0.5
+		newXOffset = (halfWidth - cd.xOffset) * scaling
+		newYOffset = (halfHeight - cd.yOffset) * scaling
 	} else {
 		// Zoom around mouse position
-		cellX = (mouseX - cd.xOffset) * cd.cellSizeInv
-		cellY = (mouseY - cd.yOffset) * cd.cellSizeInv
+		newXOffset = (float64(mouseX) - cd.xOffset) * scaling
+		newYOffset = (float64(mouseY) - cd.yOffset) * scaling
 	}
 
 	// Update cell size related properties
 	cd.cellSize = cellSize
-	cd.cellSizeInv = 1 / cellSize
-	cd.worldSize = cellSize * float64(cd.axisLength)
-
-	// Calculate new offsets
-	var newXOffset, newYOffset float64
-	if mouseX < 0 || mouseY < 0 {
-		height, width := cd.cachedDim.values()
-		newXOffset = width/2 - cellX*cellSize
-		newYOffset = height/2 - cellY*cellSize
-	} else {
-		newXOffset = mouseX - cellX*cellSize
-		newYOffset = mouseY - cellY*cellSize
-	}
+	cd.cellSizeInv = 1.0 / float64(cellSize)
+	cd.worldSize = cellSize * int(cd.axisLength)
 
 	// Use IncrementOffset to adjust the offsets
-	cd.IncrementOffset(newXOffset-cd.xOffset, newYOffset-cd.yOffset)
+	cd.IncrementOffset(newXOffset, newYOffset)
 }
 
-func (cd *canvasDrawer) SetDimensions(height, width float64) {
+func (cd *canvasDrawer) SetDimensions(height, width int) {
 	global.Call("setDimensions", cd.canvas, width, height)
-	cd.cachedDim.set(height, width)
 	cd.calcVisibleCoordinates()
+
+	// Update ImageData for batch rendering
+	if cd.canvasWidth != width || cd.canvasHeight != height {
+		cd.canvasWidth = width
+		cd.canvasHeight = height
+		cd.imageData = cd.ctx.Call("createImageData", width, height)
+		pixelCount := width * height
+		cd.pixelCount = pixelCount
+		cd.byteBuffer = make([]byte, pixelCount*4)
+	}
 }
 
 func (cd *canvasDrawer) SetSettings(age bool, drawGrid bool) {
@@ -179,18 +211,26 @@ func (cd *canvasDrawer) SetSettings(age bool, drawGrid bool) {
 	cd.grid = drawGrid
 }
 
-func (cd *canvasDrawer) calcVisibleCoordinates() {
-	height, width := cd.cachedDim.values()
+func (cd *canvasDrawer) SumCoords(coords ...uint16) uint16 {
+	res := coords[0] & cd.wrapMask
+	for i := 1; i < len(coords); i++ {
+		res += coords[i]
+		res &= cd.wrapMask
+	}
 
+	return res
+}
+
+func (cd *canvasDrawer) calcVisibleCoordinates() {
 	cd.xBoundary.calc(
-		width,
+		cd.canvasWidth,
 		cd.worldSize,
 		cd.xOffset,
 		cd.cellSizeInv,
 		cd.axisLength,
 	)
 	cd.yBoundary.calc(
-		height,
+		cd.canvasHeight,
 		cd.worldSize,
 		cd.yOffset,
 		cd.cellSizeInv,
@@ -216,119 +256,127 @@ func (cd *canvasDrawer) coordIsVisible(cx, cy uint16) bool {
 	return true
 }
 
-func (cd *canvasDrawer) drawCell(cell *protocol.Cell) {
-	pxStart := float64(cell.X)*cd.cellSize + cd.xOffset
-	pxEnd := pxStart + cd.cellSize
+// drawCellToBuffer renders a cell directly to the pixel buffer with proper wrapping
+func (cd *canvasDrawer) drawCellToBuffer(cell *protocol.Cell) {
+	// Convert cell coordinates to pixel coordinates
+	pxStartX := int(cell.X)*cd.cellSize + int(cd.xOffset)
+	pxStartY := int(cell.Y)*cd.cellSize + int(cd.yOffset)
 
-	drawXCount := 1
-
-	drawX1 := 0.0
-	drawWidth1 := 0.0
-
-	drawX2 := 0.0
-	drawWidth2 := 0.0
-
-	if pxStart < 0 && pxEnd > 0 {
-		drawX1 = 0
-		drawWidth1 = pxEnd + gridLineWidth
-		drawX2 = cd.worldSize + pxStart + gridLineWidth
-		drawWidth2 = -pxStart
-		drawXCount = 2
-	} else if pxStart < 0 && pxEnd <= 0 {
-		pxStart += cd.worldSize
-	} else if pxStart >= cd.worldSize {
-		pxStart -= cd.worldSize
-	} else if pxEnd >= cd.worldSize {
-		leftWidth := cd.worldSize - pxStart
-		drawX1 = pxStart + gridLineWidth
-		drawWidth1 = leftWidth - gridLineWidth
-		drawX2 = 0
-		drawWidth2 = cd.cellSize - leftWidth
-		drawXCount = 2
+	// Handle X wrapping - may need to draw in 1 or 2 locations
+	type xPosition struct {
+		start, width int
 	}
+	xPositions := []xPosition{}
 
-	if drawXCount == 1 {
-		drawX1 = pxStart + gridLineWidth
-		drawWidth1 = cd.cellSize - gridLineWidth
-	}
-
-	pyStart := float64(cell.Y)*cd.cellSize + cd.yOffset
-	pyEnd := pyStart + cd.cellSize
-
-	drawYCount := 1
-
-	drawY1 := 0.0
-	drawHeight1 := 0.0
-
-	drawY2 := 0.0
-	drawHeight2 := 0.0
-
-	if pyStart < 0 && pyEnd > 0 {
-		drawY1 = 0
-		drawHeight1 = pyEnd + gridLineWidth
-		drawY2 = cd.worldSize + pyStart + gridLineWidth
-		drawHeight2 = -pyStart
-		drawYCount = 2
-	} else if pyStart < 0 && pyEnd <= 0 {
-		pyStart += cd.worldSize
-	} else if pyStart >= cd.worldSize {
-		pyStart -= cd.worldSize
-	} else if pyEnd >= cd.worldSize {
-		topHeight := cd.worldSize - pyStart
-		drawY1 = pyStart + gridLineWidth
-		drawHeight1 = topHeight
-		drawY2 = 0
-		drawHeight2 = cd.cellSize - topHeight
-		drawYCount = 2
-	}
-
-	if drawYCount == 1 {
-		drawY1 = pyStart + gridLineWidth
-		drawHeight1 = cd.cellSize - gridLineWidth
-	}
-
-	if cd.drawMode == drawAge {
-		// TODO
+	if pxStartX < 0 && pxStartX+cd.cellSize > 0 {
+		// Cell straddles left edge
+		xPositions = append(xPositions, xPosition{0, pxStartX + cd.cellSize})
+		xPositions = append(xPositions, xPosition{cd.worldSize + pxStartX, -pxStartX})
+	} else if pxStartX < 0 {
+		// Cell is completely off left edge, wrap to right
+		xPositions = append(xPositions, xPosition{cd.worldSize + pxStartX, cd.cellSize})
+	} else if pxStartX >= cd.worldSize {
+		// Cell is completely off right edge, wrap to left
+		xPositions = append(xPositions, xPosition{pxStartX - cd.worldSize, cd.cellSize})
+	} else if pxStartX+cd.cellSize > cd.worldSize {
+		// Cell straddles right edge
+		rightWidth := cd.worldSize - pxStartX
+		xPositions = append(xPositions, xPosition{pxStartX, rightWidth})
+		xPositions = append(xPositions, xPosition{0, cd.cellSize - rightWidth})
 	} else {
-		cd.ctx.Set("fillStyle", fmt.Sprintf("#%.6x", cell.Colour))
+		// Cell is completely visible, no wrapping needed
+		xPositions = append(xPositions, xPosition{pxStartX, cd.cellSize})
 	}
 
-	// x1 y1
-	global.Call("strokeAndFillRect", cd.ctx, drawX1, drawY1, drawWidth1, drawHeight1)
+	type yPosition struct {
+		start, height int
+	}
+	// Handle Y wrapping - may need to draw in 1 or 2 locations
+	yPositions := []yPosition{}
 
-	if drawXCount == 2 {
-		// x2 y1
-		global.Call("strokeAndFillRect", cd.ctx, drawX2, drawY1, drawWidth2, drawHeight1)
+	if pxStartY < 0 && pxStartY+cd.cellSize > 0 {
+		// Cell straddles top edge
+		yPositions = append(yPositions, yPosition{0, pxStartY + cd.cellSize})
+		yPositions = append(yPositions, yPosition{cd.worldSize + pxStartY, -pxStartY})
+	} else if pxStartY < 0 {
+		// Cell is completely off top edge, wrap to bottom
+		yPositions = append(yPositions, yPosition{cd.worldSize + pxStartY, cd.cellSize})
+	} else if pxStartY >= cd.worldSize {
+		// Cell is completely off bottom edge, wrap to top
+		yPositions = append(yPositions, yPosition{pxStartY - cd.worldSize, cd.cellSize})
+	} else if pxStartY+cd.cellSize > cd.worldSize {
+		// Cell straddles bottom edge
+		bottomHeight := cd.worldSize - pxStartY
+		yPositions = append(yPositions, yPosition{pxStartY, bottomHeight})
+		yPositions = append(yPositions, yPosition{0, cd.cellSize - bottomHeight})
+	} else {
+		// Cell is completely visible, no wrapping needed
+		yPositions = append(yPositions, yPosition{pxStartY, cd.cellSize})
 	}
 
-	if drawYCount == 2 {
-		// x1 y2
-		global.Call("strokeAndFillRect", cd.ctx, drawX1, drawY2, drawWidth1, drawHeight2)
+	r := (cell.Colour >> 16) & 0xff
+	g := (cell.Colour >> 8) & 0xff
+	b := cell.Colour & 0xff
 
-		if drawXCount == 2 {
-			// x2 y2
-			global.Call("strokeAndFillRect", cd.ctx, drawX2, drawY2, drawWidth2, drawHeight2)
+	// Draw all combinations of X and Y positions
+	for _, xPos := range xPositions {
+		for _, yPos := range yPositions {
+			cd.fillRect(xPos.start, yPos.start, xPos.width, yPos.height, r, g, b)
+		}
+	}
+}
+
+// fillRect fills a rectangle in the pixel buffer
+func (cd *canvasDrawer) fillRect(startX, startY, width, height int, r, g, b uint32) {
+	for y := startY; y < startY+height; y += 1 {
+		if y >= cd.canvasHeight {
+			continue
+		}
+		for x := startX; x < startX+width; x += 1 {
+			if x >= cd.canvasWidth {
+				continue
+			}
+			idx := y*cd.canvasWidth + x
+			if idx < cd.pixelCount {
+				i := idx * 4
+				cd.byteBuffer[i] = byte(r)   // R
+				cd.byteBuffer[i+1] = byte(g) // G
+				cd.byteBuffer[i+2] = byte(b) // B
+				cd.byteBuffer[i+3] = 0xff    // A
+			}
 		}
 	}
 }
 
 func (cd *canvasDrawer) drawGrid() {
-	height, width := cd.cachedDim.values()
-	height = min(height, cd.worldSize)
-	width = min(width, cd.worldSize)
+	if cd.cellSize < gridMinPx {
+		return
+	}
 
-	xRem := math.Remainder(cd.xOffset, float64(cd.cellSize))
+	height := float64(min(cd.canvasHeight, cd.worldSize))
+	width := float64(min(cd.canvasWidth, cd.worldSize))
+
+	// Fix math.Remainder potentially returning negative values
+	xRem := math.Mod(cd.xOffset, float64(cd.cellSize))
+	if xRem < 0 {
+		xRem += float64(cd.cellSize)
+	}
 
 	x := xRem
 	for x <= width {
-		global.Call("vertPath", cd.ctx, x+gridLineWidth, height)
-		x += cd.cellSize
+		global.Call("vertPath", cd.ctx, x+gridLineWidth/2, height)
+		x += float64(cd.cellSize)
 	}
 
-	y := math.Remainder(cd.yOffset, float64(cd.cellSize))
+	yRem := math.Mod(cd.yOffset, float64(cd.cellSize))
+	if yRem < 0 {
+		yRem += float64(cd.cellSize)
+	}
+
+	y := yRem
 	for y <= height {
-		global.Call("horizPath", cd.ctx, y+gridLineWidth, width)
-		y += cd.cellSize
+		global.Call("horizPath", cd.ctx, y+gridLineWidth/2, width)
+		y += float64(cd.cellSize)
 	}
 
 	cd.ctx.Call("stroke")

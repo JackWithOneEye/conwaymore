@@ -1,5 +1,7 @@
 package conway
 
+import "iter"
+
 type Cell interface {
 	Values() (x, y uint16, colour uint32, age uint16)
 }
@@ -15,71 +17,68 @@ func (ac *aliveCell) Values() (x, y uint16, colour uint32, age uint16) {
 	return ac.x, ac.y, ac.colour, ac.age
 }
 
-func (ac *aliveCell) copy(other *aliveCell) {
-	ac.x = other.x
-	ac.y = other.y
-	ac.colour = other.colour
-	ac.age = other.age
+type swapSet[V any] struct {
+	current uint8
+	sets    [2]map[uint32]V
 }
 
-func (ac *aliveCell) set(x, y uint16, colour uint32, age uint16) {
-	ac.x = x
-	ac.y = y
-	ac.colour = colour
-	ac.age = age
-}
-
-type cellCandidate struct {
-	x               uint16
-	y               uint16
-	colour          uint32
-	age             uint16
-	alive           bool
-	aliveNeighbours []aliveCell
-	count           uint8
-}
-
-func (cn *cellCandidate) addNeighbour(neighbour *aliveCell) {
-	if cn.count < 3 {
-		cn.aliveNeighbours[cn.count].copy(neighbour)
+func newSwapSet[V any](capacity uint) *swapSet[V] {
+	return &swapSet[V]{
+		current: 0,
+		sets:    [2]map[uint32]V{make(map[uint32]V, capacity), make(map[uint32]V, capacity)},
 	}
-	cn.count += 1
 }
 
-func (cn *cellCandidate) create() {
-	n0 := cn.aliveNeighbours[0]
-	n1 := cn.aliveNeighbours[1]
-	n2 := cn.aliveNeighbours[2]
+func (sws *swapSet[V]) add(x, y uint16, data V) {
+	sws.sets[sws.current][toCoord(x, y)] = data
+}
 
-	// sort clockwise
-	if n0.x < n1.x || n0.y < n1.y {
-		if n2.x < n0.x || n2.y < n0.y {
-			n0 = cn.aliveNeighbours[2]
-			n1 = cn.aliveNeighbours[0]
-			n2 = cn.aliveNeighbours[1]
-		} else if n2.x < n1.x || n2.y < n1.y {
-			n1 = cn.aliveNeighbours[2]
-			n2 = cn.aliveNeighbours[1]
-		}
-	} else {
-		if n0.x < n2.x || n0.y < n2.y {
-			n0 = cn.aliveNeighbours[1]
-			n1 = cn.aliveNeighbours[0]
-			n2 = cn.aliveNeighbours[2]
-		} else if n1.x < n2.x || n1.y < n2.y {
-			n0 = cn.aliveNeighbours[1]
-			n1 = cn.aliveNeighbours[2]
-			n2 = cn.aliveNeighbours[0]
-		} else {
-			n0 = cn.aliveNeighbours[2]
-			n2 = cn.aliveNeighbours[0]
+func (sws *swapSet[V]) addNext(x, y uint16, data V) {
+	sws.sets[sws.current^1][toCoord(x, y)] = data
+}
+
+func (sws *swapSet[V]) addNextByKey(key uint32, data V) {
+	sws.sets[sws.current^1][key] = data
+}
+
+func (sws *swapSet[V]) clearAll() {
+	clear(sws.sets[0])
+	clear(sws.sets[1])
+}
+
+func (sws *swapSet[V]) clearNext() {
+	clear(sws.sets[sws.current^1])
+}
+
+func (sws *swapSet[V]) get(x, y uint16) (V, bool) {
+	d, ok := sws.sets[sws.current][toCoord(x, y)]
+	return d, ok
+}
+
+func (sws *swapSet[V]) size() int {
+	return len(sws.sets[sws.current])
+}
+
+func (sws *swapSet[V]) swap() {
+	sws.current ^= 1
+}
+
+func (sws *swapSet[V]) values() map[uint32]V {
+	return sws.sets[sws.current]
+}
+
+func (sws *swapSet[V]) iter() iter.Seq2[uint16, uint16] {
+	return func(yield func(uint16, uint16) bool) {
+		for key := range sws.sets[sws.current] {
+			x := uint16(key >> 16)
+			y := uint16(key)
+			if !yield(x, y) {
+				return
+			}
 		}
 	}
-	cn.colour = (n0.colour & 0xff0000) | (n1.colour & 0x00ff00) | (n2.colour & 0x0000ff)
 }
 
-func (cn *cellCandidate) markAsAlive(cell *aliveCell) {
-	cn.colour = cell.colour
-	cn.age = cell.age
-	cn.alive = true
+func toCoord(x, y uint16) uint32 {
+	return (uint32(x) << 16) | uint32(y)
 }

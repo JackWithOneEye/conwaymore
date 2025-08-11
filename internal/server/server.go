@@ -30,8 +30,8 @@ type server struct {
 	db           database.DatabaseService
 	engine       engine.Engine
 	listeners    map[*listener]struct{}
-	listenersMtx sync.Mutex
-	lastOutput   atomic.Pointer[[]byte]
+	listenersMtx sync.RWMutex
+	lastOutput   atomic.Value
 }
 
 type listener struct {
@@ -62,17 +62,19 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 				if !ok {
 					continue
 				}
-				s.lastOutput.Store(&o)
+				s.lastOutput.Store(o)
 
-				s.listenersMtx.Lock()
+				s.listenersMtx.RLock()
 				for l := range s.listeners {
 					select {
 					case l.msgs <- o:
 					default:
+						<-l.msgs
+						l.msgs <- o
 						log.Println("TOO SLOW!!!")
 					}
 				}
-				s.listenersMtx.Unlock()
+				s.listenersMtx.RUnlock()
 			}
 		}
 	}()
@@ -86,7 +88,7 @@ func (s *server) addListener(l *listener) {
 	defer s.listenersMtx.Unlock()
 	s.listeners[l] = struct{}{}
 	if lo := s.lastOutput.Load(); lo != nil {
-		l.msgs <- *lo
+		l.msgs <- lo.([]byte)
 	}
 }
 
@@ -143,7 +145,7 @@ func (s *server) registerRoutes() http.Handler {
 
 	r.POST("/save", func(c *gin.Context) {
 		if lo := s.lastOutput.Load(); lo != nil {
-			err := s.db.WriteSeed(c, *lo)
+			err := s.db.WriteSeed(c, lo.([]byte))
 			if err != nil {
 				log.Printf("could not save seed: %s", err)
 				c.String(http.StatusInternalServerError, "could not save seed")
@@ -159,11 +161,17 @@ func (s *server) registerRoutes() http.Handler {
 func (s *server) playHandler(c *gin.Context) {
 	l := &listener{msgs: make(chan []byte, 4)}
 	s.addListener(l)
-	defer s.removeListener(l)
+	defer func() {
+		s.removeListener(l)
+		close(l.msgs)
+	}()
 
 	w := c.Writer
 	r := c.Request
-	socket, err := websocket.Accept(w, r, nil)
+	socket, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		CompressionMode:      websocket.CompressionContextTakeover,
+		CompressionThreshold: 1024, // Only compress frames > 1KB
+	})
 	if err != nil {
 		log.Printf("could not open websocket: %s", err)
 		_, _ = w.Write([]byte("could not open websocket"))
@@ -172,28 +180,50 @@ func (s *server) playHandler(c *gin.Context) {
 	}
 	defer socket.CloseNow()
 
-	readerMsgChan := make(chan []byte)
-	defer close(readerMsgChan)
-	readerErrChan := make(chan error)
-	defer close(readerErrChan)
+	wsCtx, wsCancel := context.WithCancel(c.Request.Context())
+	var wg sync.WaitGroup
+	wg.Add(1)
 
-	reader := func() {
-		_, data, err := socket.Read(c)
-		if err != nil {
-			readerErrChan <- err
-			return
+	readerMsgChan := make(chan []byte, 10)
+	readerErrChan := make(chan error, 1)
+
+	go func() {
+		defer func() {
+			wg.Done()
+			close(readerMsgChan)
+			close(readerErrChan)
+		}()
+
+		for {
+			select {
+			case <-wsCtx.Done():
+				return
+			default:
+				_, data, err := socket.Read(wsCtx)
+				if err != nil {
+					readerErrChan <- err
+					return
+				}
+				select {
+				case readerMsgChan <- data:
+				case <-wsCtx.Done():
+					return
+				}
+			}
 		}
-		readerMsgChan <- data
-	}
+	}()
 
-	go reader()
+	defer func() {
+		wsCancel()
+		wg.Wait()
+	}()
 
 	for {
 		select {
-		case <-c.Done():
+		case <-wsCtx.Done():
 			return
 		case payload := <-l.msgs:
-			err := socket.Write(c, websocket.MessageBinary, payload)
+			err := socket.Write(wsCtx, websocket.MessageBinary, payload)
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 				return
 			}
@@ -206,7 +236,6 @@ func (s *server) playHandler(c *gin.Context) {
 			if err != nil {
 				log.Printf("websocket command produced an error: %s", err)
 			}
-			go reader()
 		case err := <-readerErrChan:
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 				return

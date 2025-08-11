@@ -392,13 +392,13 @@ func parsePattern(name, pattern string) *Pattern {
 	lines := strings.Split(pattern, "\n")
 	var cells []PatternCell
 
-	for y, line := range lines {
+	for y, line := range lines[1:] {
 		// Skip empty lines
 		if len(line) == 0 {
 			continue
 		}
 
-		for x, char := range line {
+		for x, char := range line[1:] {
 			if char == 'O' {
 				cells = append(cells, PatternCell{X: uint16(x), Y: uint16(y)})
 			}

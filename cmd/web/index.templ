@@ -1,34 +1,36 @@
 package web
 
 templ Index(defaultPath string, globals *Globals) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			<meta charset="utf-8"/>
-			<title>Conway's Game of Life</title>
-			<link href="assets/css/output.css" rel="stylesheet"/>
-			<script src="assets/js/vendor.js"></script>
-			@templ.JSONScript("globals", globals)
-		</head>
-		<body class="bg-slate-900 text-white font-sans">
-			<main class="h-screen flex flex-col p-3 gap-2">
-				<header class="flex items-center justify-between">
-					<span class="italic font-semibold text-3xl">Conway's Game Of Life</span>
-					<form id="game-form">
-						<input id="seed-input" name="seed" type="hidden"/>
-						<button
-							id="save-game"
-							class="p-1 border border-white active:bg-slate-400 disabled:text-slate-400 disabled:border-slate-400"
-							disabled
-							hx-post="/save"
-							hx-swap="none"
-						>
-							SAVE
-						</button>
-					</form>
-				</header>
-				<div hx-get={ defaultPath } hx-trigger="load" hx-swap="outerHTML"></div>
-			</main>
-		</body>
-	</html>
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Conway's Game of Life</title>
+  <link href="assets/css/output.css" rel="stylesheet" />
+  <script src="assets/js/vendor.js"></script>
+  @templ.JSONScript("globals", globals)
+</head>
+
+<body class="bg-slate-900 text-white font-sans">
+  <main class="h-screen flex flex-col p-3 gap-2">
+    <header class="flex items-center justify-between">
+      <span class="italic font-semibold text-3xl">Conway's Game Of Life</span>
+      <form id="game-form">
+        <input id="seed-input" name="seed" type="hidden" />
+        <button id="save-game"
+          class="p-1 border border-white active:bg-slate-400 disabled:text-slate-400 disabled:border-slate-400" disabled
+          hx-post="/save" hx-swap="none">
+          SAVE
+        </button>
+      </form>
+    </header>
+    <div hx-get={ defaultPath } hx-trigger="load" hx-swap="outerHTML"></div>
+  </main>
+  <div id="error-banner"
+    class="fixed top-0 left-0 right-0 bg-red-600 text-white p-2 text-sm z-50 transform -translate-y-full transition-transform">
+  </div>
+</body>
+
+</html>
 }

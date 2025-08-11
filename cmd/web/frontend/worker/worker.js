@@ -6,10 +6,10 @@ import './wasm_exec.js';
  * @param {number} lineWidth 
  */
 globalThis.prepareCtx = (ctx, strokeStyle, lineWidth) => {
-    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.beginPath()
-    ctx.strokeStyle = `#${strokeStyle.toString(16).padStart(6, '0')}`;
-    ctx.lineWidth = lineWidth;
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.beginPath()
+  ctx.strokeStyle = `#${strokeStyle.toString(16).padStart(6, '0')}`;
+  ctx.lineWidth = lineWidth;
 }
 
 /**
@@ -18,8 +18,8 @@ globalThis.prepareCtx = (ctx, strokeStyle, lineWidth) => {
  * @param {number} h 
  */
 globalThis.setDimensions = (canvas, w, h) => {
-    canvas.width = w;
-    canvas.height = h;
+  canvas.width = w;
+  canvas.height = h;
 }
 
 /**
@@ -28,8 +28,8 @@ globalThis.setDimensions = (canvas, w, h) => {
  * @param {number} len 
  */
 globalThis.vertPath = (ctx, x, len) => {
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, len);
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, len);
 }
 
 /**
@@ -38,8 +38,8 @@ globalThis.vertPath = (ctx, x, len) => {
  * @param {number} len 
  */
 globalThis.horizPath = (ctx, y, len) => {
-    ctx.moveTo(0, y);
-    ctx.lineTo(len, y);
+  ctx.moveTo(0, y);
+  ctx.lineTo(len, y);
 }
 
 /**
@@ -49,9 +49,8 @@ globalThis.horizPath = (ctx, y, len) => {
  * @param {number} w 
  * @param {number} h 
  */
-globalThis.strokeAndFillRect = (ctx, x, y, w, h) => {
-    ctx.strokeRect(x, y, w, h);
-    ctx.fillRect(x, y, w, h);
+globalThis.drawRect = (ctx, x, y, w, h) => {
+  ctx.fillRect(x, y, w, h);
 }
 
 // @ts-ignore

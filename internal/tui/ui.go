@@ -24,7 +24,7 @@ func (m *UIModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{}
 
 	m.game = &gameModel{
-		grid:         make([][]*uint32, 20),
+		grid:         make([][]uint32, 20),
 		cells:        []protocol.Cell{},
 		width:        40,
 		height:       20,
@@ -76,8 +76,8 @@ func (m *UIModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			m.game.Update(quitMessage{})
-			return m, tea.Quit
+			_, cmd := m.game.Update(quitMessage{})
+			return m, tea.Batch(cmd, tea.Quit)
 		case "esc":
 			m.foregroundVisible = false
 			// Always pass escape to game in case it's in pattern placement mode

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/JackWithOneEye/conwaymore/internal/lrucache"
 	"github.com/JackWithOneEye/conwaymore/internal/patterns"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -13,9 +15,17 @@ import (
 	"github.com/coder/websocket"
 )
 
+// tickMsg is sent every 1/30th second to trigger UI updates
+type tickMsg struct{}
+
+// sgrPrefixCache caches just the SGR prefix for a given color (no reset), used by RLE renderer
+var sgrPrefixCache = lrucache.NewLruCache[uint64, string](2048)
+
+const emptyCell uint32 = 0xffffffff
+
 type gameModel struct {
 	worldSize    int
-	grid         [][]*uint32
+	grid         [][]uint32 // value grid: 0 = empty, non-zero = color
 	cells        []protocol.Cell
 	width        int
 	height       int
@@ -37,13 +47,54 @@ type gameModel struct {
 	placingPattern  bool              // true when in pattern placement mode
 	currentPattern  *patterns.Pattern // pattern being placed
 	patternCanPlace bool              // true if pattern can be placed at current position
+
+	// Performance optimizations
+	pendingData    []byte // latest WebSocket message data, processed on tick
+	lastUpdate     time.Time
+	currentCells   map[uint64]uint32         // reused across frames to avoid allocation
+	prevCells      map[uint64]uint32         // cache of previous frame's cells for diff rendering (key: x<<32|y)
+	rowDirty       []bool                    // tracks which rows need re-rendering
+	renderedRows   []string                  // cached rendered row strings
+	cellStyleCache map[uint32]lipgloss.Style // reused across frames
+}
+
+// tick returns a command that sends a tickMsg every 1/30th second (30 FPS)
+func tick() tea.Cmd {
+	return tea.Tick(time.Second/30, func(time.Time) tea.Msg {
+		return tickMsg{}
+	})
+}
+
+// getSGRPrefix returns the ANSI SGR prefix for a color without reset, cached and bounded
+func getSGRPrefix(color uint32) string {
+	key := uint64(color)
+	if s, ok := sgrPrefixCache.Get(key); ok {
+		return s
+	}
+	r := (color >> 16) & 0xff
+	g := (color >> 8) & 0xff
+	b := color & 0xff
+	prefix := fmt.Sprintf("\x1b[38;2;%d;%d;%dm", r, g, b)
+	sgrPrefixCache.Add(key, prefix)
+	return prefix
+}
+
+// markAllRowsDirty marks all rows as needing re-rendering
+func (m *gameModel) markAllRowsDirty() {
+	for i := range m.rowDirty {
+		m.rowDirty[i] = true
+	}
 }
 
 func (m *gameModel) Init() tea.Cmd {
-	for i := range m.grid {
-		m.grid[i] = make([]*uint32, m.width)
-	}
-	return connectToAPI(m.apiHost)
+	m.setDimensions(m.height, m.width, m.hasHalfCol)
+	m.lastUpdate = time.Now()
+	m.prevCells = make(map[uint64]uint32)
+	m.currentCells = make(map[uint64]uint32)
+	m.cellStyleCache = make(map[uint32]lipgloss.Style)
+	// Initialize all rows as dirty for first render
+	m.markAllRowsDirty()
+	return tea.Batch(connectToAPI(m.apiHost), tick())
 }
 
 func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -56,6 +107,7 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.placingPattern = true
 		m.currentPattern = msg.pattern
 		m.updatePatternCanPlace()
+		m.markAllRowsDirty() // Redraw all rows to show dimmed effect
 		return m, nil
 	case tea.MouseMsg:
 		// Disable mouse clicks during pattern placement mode
@@ -122,11 +174,13 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Place the pattern by sending cells to server
 					cells := m.getPatternCells()
 					m.placingPattern = false
+					m.markAllRowsDirty() // Remove dimmed effect
 					return m, sendCells(m.conn, cells)
 				}
 			case "esc":
 				// Abort pattern placement
 				m.placingPattern = false
+				m.markAllRowsDirty() // Remove dimmed effect
 			}
 			return m, nil
 		}
@@ -189,6 +243,7 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quitMessage:
 		if m.conn != nil {
 			m.conn.Close(websocket.StatusNormalClosure, "")
+			m.conn = nil
 		}
 		return m, nil
 	case connectionResult:
@@ -207,20 +262,31 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		cells, playing, speed, err := processServerMessage(msg.Data)
-		if err != nil {
-			m.err = err
-		} else {
-			m.cells = cells
-			m.running = playing
-			m.speed.Store(uint32(speed))
-			m.updateGrid()
-		}
+		// Cache the latest data instead of processing immediately
+		m.pendingData = msg.Data
 
 		// Continue listening for messages
 		if m.isConnected() {
 			return m, listenForMessages(m.conn)
 		}
+	case tickMsg:
+		// Process pending data at 30 FPS
+		if m.pendingData != nil {
+			cells, playing, speed, err := processServerMessage(m.pendingData)
+			if err != nil {
+				m.err = err
+			} else {
+				m.cells = cells
+				m.running = playing
+				m.speed.Store(uint32(speed))
+				m.updateGrid()
+				m.lastUpdate = time.Now()
+			}
+			m.pendingData = nil // Clear pending data
+		}
+
+		// Continue ticking
+		return m, tick()
 	case saveGameResult:
 		if msg.Err != nil {
 			m.err = msg.Err
@@ -247,16 +313,10 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newHasHalfCol := (availableWidth % 2) == 1
 
 			if newHeight != m.height || newWidth != m.width || newHasHalfCol != m.hasHalfCol {
-				m.height = newHeight
-				m.width = newWidth
-				if newHasHalfCol {
-					m.width += 1
-				}
-				m.hasHalfCol = newHasHalfCol
-				m.grid = make([][]*uint32, m.height)
-				for i := range m.grid {
-					m.grid[i] = make([]*uint32, m.width)
-				}
+				m.setDimensions(newHeight, newWidth, newHasHalfCol)
+				clear(m.prevCells)
+				// Mark all rows dirty when terminal size changes
+				m.markAllRowsDirty()
 				m.updateGrid()
 				// Update pattern collision detection when viewport size changes
 				if m.placingPattern {
@@ -270,14 +330,13 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *gameModel) View() string {
 	var s strings.Builder
-	cellStyleCache := make(map[uint32]lipgloss.Style)
 
 	// Create header with title and status
 	title := titleStyle.Render("Conway's Game of Life - Terminal UI")
 	if m.saving {
 		title += fmt.Sprintf(" %s", m.spinner.View())
 	}
-	colorSwatch := styleFor(m.currentColor, cellStyleCache).Render("██")
+	colorSwatch := styleFor(m.currentColor, m.cellStyleCache).Render("██")
 
 	statusText := ""
 	if m.placingPattern {
@@ -327,24 +386,97 @@ func (m *gameModel) View() string {
 		s.WriteString("\n")
 	}
 
-	// Build grid using lipgloss styles
-	var rows []string
+	// Build grid using dirty row tracking to avoid rebuilding unchanged rows
 	for y := 0; y < m.height; y++ {
-		var row strings.Builder
-		for x := 0; x < m.width; x++ {
-			color := m.grid[y][x]
-			isPatternCell := m.placingPattern && m.isPatternCell(x, y)
-
-			row.WriteString(m.renderCell(x, color, isPatternCell, cellStyleCache))
+		if m.rowDirty[y] || m.placingPattern {
+			m.renderedRows[y] = m.renderRowRLE(y)
+			m.rowDirty[y] = false
 		}
-		rows = append(rows, row.String())
 	}
 
-	grid := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	grid := lipgloss.JoinVertical(lipgloss.Left, m.renderedRows...)
+	// Ensure the grid has a fixed width so the frame doesn't collapse when rows are empty or unchanged
+	gridWidthChars := m.width * 2
+	if m.hasHalfCol {
+		gridWidthChars = (m.width-1)*2 + 1
+	}
+	grid = lipgloss.NewStyle().Width(gridWidthChars).Render(grid)
 	framedGrid := frameStyle.Render(grid)
 	s.WriteString(framedGrid)
 
 	return s.String()
+}
+
+// renderRowRLE renders a single row using run-length emission of ANSI sequences to reduce SGR count
+func (m *gameModel) renderRowRLE(y int) string {
+	var b strings.Builder
+	// Rough capacity: 2 chars per cell + some ANSI overhead
+	b.Grow(m.width*2 + 64)
+
+	currentColor := emptyCell
+	currentHalf := false
+	runLen := 0
+
+	flush := func() {
+		if runLen == 0 {
+			return
+		}
+		if currentColor == emptyCell {
+			if currentHalf {
+				b.WriteString(strings.Repeat(" ", runLen))
+			} else {
+				b.WriteString(strings.Repeat("  ", runLen))
+			}
+		} else {
+			b.WriteString(getSGRPrefix(currentColor))
+			if currentHalf {
+				b.WriteString(strings.Repeat("█", runLen))
+			} else {
+				b.WriteString(strings.Repeat("██", runLen))
+			}
+			b.WriteString("\x1b[0m")
+		}
+		runLen = 0
+	}
+
+	for x := 0; x < m.width; x++ {
+		displayColor := emptyCell
+		if m.placingPattern && m.isPatternCell(x, y) {
+			if m.patternCanPlace {
+				displayColor = m.currentColor
+			} else {
+				displayColor = dimColor(m.currentColor)
+			}
+		} else {
+			cell := m.grid[y][x]
+			if cell != emptyCell {
+				if m.placingPattern {
+					displayColor = dimColor(cell)
+				} else {
+					displayColor = cell
+				}
+			}
+		}
+		half := m.hasHalfCol && x == m.width-1
+
+		if runLen == 0 {
+			currentColor = displayColor
+			currentHalf = half
+			runLen = 1
+			continue
+		}
+		if displayColor == currentColor && half == currentHalf {
+			runLen++
+		} else {
+			flush()
+			currentColor = displayColor
+			currentHalf = half
+			runLen = 1
+		}
+	}
+	flush()
+
+	return b.String()
 }
 
 // getPatternCells converts the current pattern to protocol.Cell slice for placement
@@ -443,54 +575,71 @@ func (m *gameModel) moveViewport(deltaX, deltaY int) {
 	}
 }
 
-// renderCell renders a single cell with appropriate styling
-func (m *gameModel) renderCell(x int, color *uint32, isPatternCell bool, cellStyleCache map[uint32]lipgloss.Style) string {
-	var style lipgloss.Style
-
-	if isPatternCell {
-		if m.patternCanPlace {
-			style = styleFor(m.currentColor, cellStyleCache)
-		} else {
-			style = dimStyleFor(m.currentColor, cellStyleCache)
-		}
-	} else if color != nil {
-		if m.placingPattern {
-			style = dimStyleFor(*color, cellStyleCache)
-		} else {
-			style = styleFor(*color, cellStyleCache)
-		}
-	} else {
-		// Empty cell
-		if m.hasHalfCol && x == m.width-1 {
-			return halfCellStyle.Render()
-		}
-		return emptyCellStyle.Render()
+func (m *gameModel) setDimensions(height, width int, hasHalfCol bool) {
+	m.height = height
+	m.width = width
+	if hasHalfCol {
+		m.width += 1
 	}
-
-	if m.hasHalfCol && x == m.width-1 {
-		return style.Render("█")
+	m.hasHalfCol = hasHalfCol
+	m.grid = make([][]uint32, m.height)
+	for i := range m.grid {
+		m.grid[i] = make([]uint32, m.width)
+		for j := range m.width {
+			m.grid[i][j] = emptyCell
+		}
 	}
-	return style.Render("██")
+	m.rowDirty = make([]bool, m.height)
+	m.renderedRows = make([]string, m.height)
 }
 
 func (m *gameModel) updateGrid() {
-	// Clear the grid - use max uint32 as sentinel for dead cells
-	for y := 0; y < m.height; y++ {
-		for x := 0; x < m.width; x++ {
-			m.grid[y][x] = nil
-		}
+	// Clear current cells map for reuse (avoids allocation)
+	clear(m.currentCells)
+
+	// Reset dirty row tracking
+	for i := range m.rowDirty {
+		m.rowDirty[i] = false
 	}
 
-	// Set cells from server data, applying viewport offset
+	// Process cells and filter to visible viewport
 	for _, cell := range m.cells {
-		// Convert world coordinates to viewport coordinates
+		// Convert world coordinates to viewport coordinates (handles wrap-around correctly)
 		screenX, screenY := m.worldToViewport(int(cell.X), int(cell.Y))
 
-		// Only render if cell is within the visible viewport
+		// Only track cells within the visible viewport
 		if screenX >= 0 && screenX < m.width && screenY >= 0 && screenY < m.height {
-			m.grid[screenY][screenX] = &cell.Colour
+			key := uint64(screenX)<<32 | uint64(screenY)
+			m.currentCells[key] = cell.Colour
 		}
 	}
+
+	// Clear cells that are no longer alive (differential update)
+	for key := range m.prevCells {
+		if _, exists := m.currentCells[key]; !exists {
+			x := int(key >> 32)
+			y := int(key & 0xFFFFFFFF)
+			if x >= 0 && x < m.width && y >= 0 && y < m.height {
+				m.grid[y][x] = emptyCell
+				m.rowDirty[y] = true
+			}
+		}
+	}
+
+	// Update cells that changed or are new
+	for key, color := range m.currentCells {
+		if prevColor, exists := m.prevCells[key]; !exists || prevColor != color {
+			x := int(key >> 32)
+			y := int(key & 0xFFFFFFFF)
+			if x >= 0 && x < m.width && y >= 0 && y < m.height {
+				m.grid[y][x] = color // Direct value assignment, no heap allocation
+				m.rowDirty[y] = true
+			}
+		}
+	}
+
+	// Swap current and previous for next frame (avoid map reallocation)
+	m.prevCells, m.currentCells = m.currentCells, m.prevCells
 }
 
 // updatePatternCanPlace checks if the current pattern can be placed at the current position
@@ -507,10 +656,8 @@ func (m *gameModel) updatePatternCanPlace() {
 		// Allow patterns to extend beyond viewport - they just won't be visible
 		if pos.x >= 0 && pos.x < m.width && pos.y >= 0 && pos.y < m.height {
 			// Check if there's already a cell at this position
-			if m.grid[pos.y][pos.x] != nil {
-				m.patternCanPlace = false
-				return
-			}
+			m.patternCanPlace = m.grid[pos.y][pos.x] == emptyCell
+			m.rowDirty[pos.y] = true
 		}
 	}
 }

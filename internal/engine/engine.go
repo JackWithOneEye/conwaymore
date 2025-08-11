@@ -38,18 +38,19 @@ type engine struct {
 	speed        atomic.Uint32 // ms
 	speedChanged atomic.Bool
 	state        atomic.Uint32
-	mutex        sync.RWMutex
-	outputCells  []protocol.Cell
+	mutex        sync.Mutex
+	output       protocol.Output
 	outputChan   chan []byte
+	encodeBuffer []byte
 }
 
 func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
 	ws := cfg.WorldSize()
 	e := &engine{
-		ctx:         ctx,
-		conway:      conway.NewConway(cfg),
-		outputCells: make([]protocol.Cell, ws*ws),
-		outputChan:  make(chan []byte, 1),
+		ctx:        ctx,
+		conway:     conway.NewConway(cfg),
+		output:     protocol.Output{Cells: make([]protocol.Cell, ws/4)},
+		outputChan: make(chan []byte, 2),
 	}
 
 	e.speed.Store(100)
@@ -77,7 +78,10 @@ func (e *engine) Speed() uint32 {
 
 func (e *engine) Start() {
 	ticker := time.NewTicker(e.speedAsDuration())
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		close(e.outputChan)
+	}()
 
 	for {
 		select {
@@ -127,24 +131,36 @@ func (e *engine) calcNextGen() {
 }
 
 func (e *engine) generateOutput() {
-	e.mutex.RLock()
-	defer e.mutex.RUnlock()
-
-	output := &protocol.Output{
-		CellsCount: uint32(e.conway.CellsCount()),
-		Playing:    e.state.Load() == playing,
-		Speed:      uint16(e.speed.Load()),
-		Cells:      e.outputCells,
+	e.mutex.Lock()
+	cnt := e.conway.CellsCount()
+	if uint(len(e.output.Cells)) < cnt {
+		e.output.Cells = make([]protocol.Cell, cnt*2)
 	}
-
-	i := 0
-	for cell := range e.conway.Cells() {
+	for i, cell := range e.conway.Cells() {
 		x, y, colour, age := cell.Values()
-		e.outputCells[i] = protocol.Cell{X: x, Y: y, Colour: colour, Age: age}
-		i += 1
+		e.output.Cells[i].X = x
+		e.output.Cells[i].Y = y
+		e.output.Cells[i].Colour = colour
+		e.output.Cells[i].Age = age
 	}
+	e.output.CellsCount = uint32(cnt)
+	e.output.Playing = e.state.Load() == playing
+	e.output.Speed = uint16(e.speed.Load())
 
-	e.outputChan <- output.Encode()
+	encodeSize := e.output.EncodeSize()
+	if uint32(cap(e.encodeBuffer)) < encodeSize {
+		e.encodeBuffer = make([]byte, encodeSize)
+	}
+	e.encodeBuffer = e.encodeBuffer[:encodeSize]
+	e.output.Encode(e.encodeBuffer)
+	out := append([]byte(nil), e.encodeBuffer...)
+	e.mutex.Unlock()
+
+	select {
+	case e.outputChan <- out:
+	default:
+		log.Println("NOPE")
+	}
 }
 
 func (e *engine) handleCommand(c *protocol.Command) error {

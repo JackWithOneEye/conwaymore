@@ -32,7 +32,7 @@ func NewDatabaseService(cfg DatabaseConfig) DatabaseService {
 
 	s := &service{cfg, db}
 
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS conway (id INTEGER PRIMARY KEY AUTOINCREMENT, seed text NOT NULL)")
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS conway (id INTEGER PRIMARY KEY AUTOINCREMENT, seed BLOB NOT NULL)")
 	if err != nil {
 		panic(fmt.Sprintf("could not initialise database %s", err))
 	}
@@ -46,7 +46,7 @@ func (s *service) Close() error {
 }
 
 func (s *service) GetSeed() ([]byte, error) {
-	rows, err := s.db.Query("SELECT seed FROM conway WHERE id=0")
+	rows, err := s.db.Query("SELECT seed FROM conway ORDER BY id DESC LIMIT 1")
 	if err != nil {
 		return nil, err
 	}
@@ -57,19 +57,14 @@ func (s *service) GetSeed() ([]byte, error) {
 			return nil, err
 		}
 	}
-	return seed, nil
+	return seed, rows.Err()
 }
 
 func (s *service) WriteSeed(ctx context.Context, seed []byte) error {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	_, err := s.db.ExecContext(ctx, "INSERT INTO conway (id, seed) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET seed=?", seed, seed)
 	if err != nil {
-		return err
-	}
-	_, err = tx.Exec("INSERT INTO conway (id, seed) VALUES (0, ?) ON CONFLICT (id) DO UPDATE SET seed=?", seed, seed)
-	if err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 
-	return tx.Commit()
+	return nil
 }

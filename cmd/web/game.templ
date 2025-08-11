@@ -11,59 +11,77 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 	@templ.JSONScript("patterns", ps)
 	<div class="flex flex-col flex-1 gap-x-4 gap-y-4 overflow-auto">
 		<div class="w-full bg-slate-950 border border-gray-50 rounded-lg shadow flex-1 flex flex-col overflow-hidden">
-			<div class="flex flex-wrap justify-between gap-2 p-2">
+			<div class="flex flex-wrap justify-between gap-2 p-2 md:gap-4">
 				// pattern menu toggle
-				@golButton("pattern-menu-toggle", "PATTERNS", false)
-				<div class="flex gap-1">
+				@golButton("pattern-menu-toggle", "PATTERNS", false, "Toggle pattern menu")
+				<div class="flex gap-1 md:gap-2">
 					// clear
-					@golButton("clear", "CLEAR", false)
+					@golButton("clear", "CLEAR", false, "Clear all cells from the grid")
 					// random
-					@golButton("random", "RANDOM", false)
+					@golButton("random", "RANDOM", false, "Fill grid with random cells")
 				</div>
 				// cell size
 				@golSlider("cell-size", "Cell Size", fmt.Sprintf("%d", cellSize), fmt.Sprintf("%d", cellSize))
 				// cell colour
-				<div class="flex flex-col text-xs w-28">
+				<div class="flex flex-col text-xs w-28 md:w-32">
 					<label for="cell-colour">Cell Colour</label>
 					<div class="flex items-center gap-1">
-						<input id="cell-colour" class="h-5" type="color" value={ cellColourHex }/>
-						<button id="random-colour" class="hover:bg-slate-600">{ cellColourHex }</button>
+						<input
+							id="cell-colour"
+							class="h-8 w-8 md:h-5 md:w-5"
+							type="color"
+							value={ cellColourHex }
+							aria-label="Select cell colour"
+						/>
+						<button
+							id="random-colour"
+							class="hover:bg-slate-600 p-1 min-h-8 md:min-h-6"
+							aria-label="Generate random colour"
+						>{ cellColourHex }</button>
 					</div>
 				</div>
-				<div class="flex flex-col">
+				<div class="flex flex-col gap-1">
 					<div class="flex gap-2 items-center text-xs">
-						<input id="show-age" class="h-5" type="checkbox"/>
+						<input id="show-age" class="h-5 w-5" type="checkbox"/>
 						<label for="show-age">Age</label>
 					</div>
 					<div class="flex gap-2 items-center text-xs">
-						<input id="draw-grid" class="h-5" type="checkbox" checked/>
+						<input id="draw-grid" class="h-5 w-5" type="checkbox" checked/>
 						<label for="draw-grid">Grid</label>
 					</div>
 				</div>
 				// speed
 				@golSlider("speed", "Speed", fmt.Sprintf("%f", math.Pow((1000.0-speedMs)*0.01, 2.0)), fmt.Sprintf("%.0f ms",
 					speedMs))
-				<div class="flex gap-1">
+				<div class="flex gap-1 md:gap-2">
 					// next
-					@golButton("next", "NEXT", playing)
+					@golButton("next", "NEXT", playing, "Advance to next generation")
 					// play / pause
 					@golButton("play-pause", func() string {
 						if playing {
 							return "PAUSE"
 						}
 						return "PLAY"
-					}(), false)
+					}(), false, func() string {
+						if playing {
+							return "Pause simulation"
+						}
+						return "Start simulation"
+					}())
 				</div>
 			</div>
 			<div
 				id="pattern-menu"
 				class="hidden transition-transform flex-wrap border-2 border-gray-300 gap-2 p-2 mx-1 data-[open=true]:flex data-[open=true]:transition-none"
 			>
-				<template id="pattern-template">
+				<template id="pattern">
 					<div class="p-1 border border-gray-300 cursor-pointer" draggable="true">
 						<span></span>
 					</div>
 				</template>
+				<div class="absolute left-[-100%]">
+					<div id="pattern-drag-container" class="relative bg-transparent"></div>
+				</div>
 			</div>
 			<div class="flex flex-1 p-1 overflow-hidden">
 				<div class="w-full p-1 border border-white">
@@ -78,11 +96,12 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 	</div>
 }
 
-templ golButton(id, label string, disabled bool) {
+templ golButton(id, label string, disabled bool, ariaLabel string) {
 	<button
 		id={ id }
-		class="text-sm px-1 border border-white active:bg-slate-800 data-[active]:bg-slate-800 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none"
+		class="text-sm px-2 py-1 md:px-1 border border-white active:bg-slate-800 data-[active]:bg-slate-800 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none min-h-[44px] md:min-h-[32px] touch-manipulation"
 		disabled?={ disabled }
+		aria-label={ ariaLabel }
 	>
 		{ label }
 	</button>
@@ -92,8 +111,15 @@ templ golSlider(id, label string, value string, valueLabel string) {
 	<div class="flex flex-col text-xs">
 		<label for={ id }>{ label }</label>
 		<div class="flex items-center gap-1">
-			<input id={ id } type="range" min="1" value={ value }/>
-			<span id={ id + "-label" } class="w-12">{ valueLabel }</span>
+			<input
+				id={ id }
+				type="range"
+				min="1"
+				value={ value }
+				class="min-h-[44px] md:min-h-[24px] touch-manipulation"
+				aria-valuetext={ valueLabel }
+			/>
+			<span id={ id + "-label" } class="w-12 text-center">{ valueLabel }</span>
 		</div>
 	</div>
 }

@@ -123,9 +123,9 @@ func handleCanvasDrag(data js.Value) {
 
 func handleCellSizeChange(data js.Value) {
 	drawer.SetCellSize(
-		scaleCellSize(data.Get("cellSize").Float()),
-		data.Get("mouseX").Float(),
-		data.Get("mouseY").Float(),
+		data.Get("cellSize").Int(),
+		data.Get("mouseX").Int(),
+		data.Get("mouseY").Int(),
 	)
 }
 
@@ -138,24 +138,25 @@ func handleCommand(data js.Value) js.Value {
 	return js.Undefined()
 }
 
-func handleInit(data js.Value) {
+func handleInit(data js.Value) js.Value {
 	if initialised {
-		log.Fatalf("already initialised!")
+		return makeError("already initialised").Value
 	}
 	drawer = canvas.NewCanvasDrawer(
 		data.Get("canvas"),
 		data.Get("worldSize").Int(),
 		int(scaleCellSize(data.Get("cellSize").Float())),
-		data.Get("height").Float(),
-		data.Get("width").Float(),
+		data.Get("height").Int(),
+		data.Get("width").Int(),
 	)
 	initialised = true
+	return js.Undefined()
 }
 
 func handleResize(data js.Value) {
 	drawer.SetDimensions(
-		data.Get("height").Float(),
-		data.Get("width").Float(),
+		data.Get("height").Int(),
+		data.Get("width").Int(),
 	)
 }
 
@@ -211,8 +212,8 @@ func handleSetPattern(data js.Value) js.Value {
 	}
 	for i, c := range pattern.Cells {
 		sc.Cells[i] = protocol.Cell{
-			X:      originCx + c.X,
-			Y:      originCy + c.Y,
+			X:      drawer.SumCoords(originCx-pattern.CenterX, c.X),
+			Y:      drawer.SumCoords(originCy-pattern.CenterY, c.Y),
 			Colour: colour,
 		}
 	}
@@ -244,7 +245,7 @@ func onMessage(msgEvt js.Value) js.Value {
 
 	switch tpe {
 	case msgInit:
-		handleInit(data)
+		return handleInit(data)
 	case msgCanvasDrag:
 		handleCanvasDrag(data)
 	case msgCellSizeChange:
@@ -276,7 +277,7 @@ func makeError(msg string) js.Error {
 }
 
 func scaleCellSize(cellSize float64) float64 {
-	return math.Round(2 + 0.58*cellSize)
+	return math.Round(max(cellSize, 1.0))
 }
 
 func sendClientMessage(msg protocol.ClientMessage) error {

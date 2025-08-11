@@ -1,26 +1,45 @@
-/** @import { Pattern } from './patterns' */
 /** @import { CanvasDragState, Globals, PatternDragState } from './types/ui' */
 /** @import { CanvasWorkerEvent, CanvasWorkerInitMessage, CanvasWorkerMessage } from './types/worker' */
-import { getElementByIdOrDie } from './helpers';
+import { getElementByIdOrDie, showError, UserPreferences } from './helpers';
 import { getPatterns } from './patterns';
 import { computed, effect, reactive, signal } from './signals';
 import { CanvasWorkerEventType, CanvasWorkerMessageType, Command } from './types/enums';
 
-const globalsEl = getElementByIdOrDie('globals')
+// Constants for better maintainability
+const MAX_ZOOM = 100;
+const MIN_ZOOM = 1;
+const LOW_ZOOM_THRESHOLD = 5;
+
+const globalsEl = getElementByIdOrDie('globals');
 if (!globalsEl.textContent) {
   throw new Error('globals element is empty');
 }
+
+let globals;
+try {
+  globals = JSON.parse(globalsEl.textContent);
+} catch (error) {
+  showError('Failed to parse global configuration');
+  throw error;
+}
+
 /** @type {Globals} */
-const { WorldSize } = JSON.parse(globalsEl.textContent);
+const { WorldSize } = globals;
 const Patterns = getPatterns();
 
 const canvasWorker = new Worker('/assets/js/worker.js', { type: 'module' });
 
 /**
- * @param {CanvasWorkerMessage} msg 
+ * Send a message to the canvas worker with error handling
+ * @param {CanvasWorkerMessage} msg - The message to send to the worker
  */
 function canvasWorkerMessage(msg) {
-  canvasWorker.postMessage(msg);
+  try {
+    canvasWorker.postMessage(msg);
+  } catch (error) {
+    console.error('Failed to send message to worker:', error);
+    showError('Communication error with rendering engine');
+  }
 }
 
 const App = {
@@ -29,7 +48,8 @@ const App = {
     canvasWrapper: /** @type {HTMLDivElement} */ (getElementByIdOrDie('canvas-wrapper')),
 
     patternMenu: getElementByIdOrDie('pattern-menu'),
-    pattenMenuToggle: getElementByIdOrDie('pattern-menu-toggle'),
+    patternMenuToggle: getElementByIdOrDie('pattern-menu-toggle'),
+    patternDragContainer: getElementByIdOrDie('pattern-drag-container'),
 
     clear: /** @type {HTMLButtonElement} */ (getElementByIdOrDie('clear')),
     next: /** @type {HTMLButtonElement} */ (getElementByIdOrDie('next')),
@@ -50,6 +70,27 @@ const App = {
     speedLabel: getElementByIdOrDie('speed-label'),
   },
   init() {
+    // Load user preferences
+    const prefs = UserPreferences.load();
+
+    // Apply saved preferences
+    if (prefs.cellSize !== undefined) {
+      App.$.cellSize.value = String(prefs.cellSize);
+      App.$.cellSizeLabel.textContent = String(prefs.cellSize);
+    }
+    if (prefs.cellColour !== undefined) {
+      App.cellColour.state.update(prefs.cellColour);
+    }
+    if (prefs.showAge !== undefined) {
+      App.$.showAge.checked = prefs.showAge;
+    }
+    if (prefs.drawGrid !== undefined) {
+      App.$.drawGrid.checked = prefs.drawGrid;
+    }
+    if (prefs.speed !== undefined) {
+      App.speed.state.update(prefs.speed);
+    }
+
     App.$.save.removeAttribute('disabled');
     App.$.clear.addEventListener('click', () => canvasWorkerMessage({
       type: CanvasWorkerMessageType.Command,
@@ -69,17 +110,17 @@ const App = {
     }));
 
     let patternMenuOpen = false;
-    App.$.pattenMenuToggle.addEventListener('click', () => {
+    App.$.patternMenuToggle.addEventListener('click', () => {
       patternMenuOpen = !patternMenuOpen;
       if (patternMenuOpen) {
         App.$.patternMenu.dataset.open = 'true';
-        App.$.pattenMenuToggle.dataset.active = '';
+        App.$.patternMenuToggle.dataset.active = '';
       } else {
         delete App.$.patternMenu.dataset.open;
-        delete App.$.pattenMenuToggle.dataset.active;
+        delete App.$.patternMenuToggle.dataset.active;
       }
     });
-    const patternTemplate = /** @type {HTMLTemplateElement} */ (getElementByIdOrDie('pattern-template'));
+    const patternTemplate = /** @type {HTMLTemplateElement} */ (document.querySelector('template#pattern'));
     const fragment = document.createDocumentFragment();
     for (const [type, pattern] of Patterns.entries()) {
       const patternEl = /** @type {Element} */ (patternTemplate.content.cloneNode(true)).firstElementChild;
@@ -87,8 +128,10 @@ const App = {
         throw new Error('failed to clone pattern template')
       }
       const [span] = patternEl.getElementsByTagName('span');
+      patternEl.setAttribute('aria-label', `Drag ${pattern.name} pattern to canvas`);
       span.textContent = pattern.name;
-      /** @type {HTMLDivElement} */ (patternEl).addEventListener(
+
+        /** @type {HTMLDivElement} */ (patternEl).addEventListener(
         'dragstart',
         (e) => App.dragPattern.start(e, type)
       );
@@ -98,7 +141,10 @@ const App = {
 
     App.$.cellSize.addEventListener('input', () => {
       const cellSize = Number(App.$.cellSize.value);
-      App.$.cellSizeLabel.textContent = App.$.cellSize.value;
+      App.$.cellSizeLabel.textContent = String(cellSize);
+      App.$.cellSize.setAttribute('aria-valuetext', `Cell size ${cellSize}`);
+      UserPreferences.save({ cellSize });
+
       canvasWorkerMessage({
         type: CanvasWorkerMessageType.CellSizeChange,
         cellSize,
@@ -108,18 +154,31 @@ const App = {
     });
 
     App.$.cellColour.addEventListener('input', () => {
-      App.cellColour.state.update(Number(`0x${App.$.cellColour.value.substring(1)}`));
+      const colour = Number(`0x${App.$.cellColour.value.substring(1)}`);
+      App.cellColour.state.update(colour);
+      UserPreferences.save({ cellColour: colour });
     });
     App.$.randomColour.addEventListener('click', () => {
-      App.cellColour.state.update((Math.random() * 0xffffff) | 0);
+      const colour = (Math.random() * 0xffffff) | 0;
+      App.cellColour.state.update(colour);
+      UserPreferences.save({ cellColour: colour });
     });
 
     App.$.drawGrid.addEventListener('input', () => {
       App.settings.state.drawGrid = App.$.drawGrid.checked;
+      UserPreferences.save({ drawGrid: App.$.drawGrid.checked });
+    });
+
+    App.$.showAge.addEventListener('input', () => {
+      App.settings.state.drawAge = App.$.showAge.checked;
+      UserPreferences.save({ showAge: App.$.showAge.checked });
     });
 
     App.$.speed.addEventListener('input', () => {
-      canvasWorkerMessage({ type: CanvasWorkerMessageType.SetSpeed, speed: App.speed.convertSpeed(App.$.speed.value) });
+      const speed = App.speed.convertSpeed(App.$.speed.value);
+      App.$.speed.setAttribute('aria-valuetext', `Speed ${speed.toFixed(0)} milliseconds`);
+      UserPreferences.save({ speed });
+      canvasWorkerMessage({ type: CanvasWorkerMessageType.SetSpeed, speed });
     });
 
     document.addEventListener('mouseup', () => {
@@ -128,7 +187,11 @@ const App = {
 
     const resObs = new ResizeObserver((entries) => {
       const { height, width } = entries[0].contentRect;
-      canvasWorkerMessage({ type: CanvasWorkerMessageType.Resize, height, width });
+      canvasWorkerMessage({
+        type: CanvasWorkerMessageType.Resize,
+        height,
+        width
+      });
     });
     resObs.observe(App.$.canvasWrapper);
 
@@ -140,13 +203,27 @@ const App = {
     App.$.canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      App.moveCanvas.start(e.targetTouches[0].clientX, e.targetTouches[0].clientY);
+
+      if (e.touches.length === 1) {
+        // Single touch - drag
+        App.moveCanvas.start(e.targetTouches[0].clientX, e.targetTouches[0].clientY);
+      } else if (e.touches.length === 2) {
+        // Two finger touch - prepare for pinch zoom
+        App.setupPinchZoom(e);
+      }
     });
     App.$.canvas.addEventListener('mousemove', (e) => {
       App.moveCanvas.drag(e.x, e.y);
     });
     App.$.canvas.addEventListener('touchmove', (e) => {
-      App.moveCanvas.drag(e.targetTouches[0].clientX, e.targetTouches[0].clientY);
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.touches.length === 1) {
+        App.moveCanvas.drag(e.targetTouches[0].clientX, e.targetTouches[0].clientY);
+      } else if (e.touches.length === 2) {
+        App.handlePinchZoom(e);
+      }
     });
     App.$.canvas.addEventListener('mouseup', (e) => {
       e.preventDefault();
@@ -156,8 +233,14 @@ const App = {
     App.$.canvas.addEventListener('touchend', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const bcr = /** @type {HTMLElement} */ (e.target).getBoundingClientRect();
-      App.moveCanvas.end(e.changedTouches[0].pageX - bcr.left, e.changedTouches[0].pageY - bcr.top);
+
+      if (e.changedTouches.length === 1 && e.touches.length === 0) {
+        const bcr = /** @type {HTMLElement} */ (e.target).getBoundingClientRect();
+        App.moveCanvas.end(
+          e.changedTouches[0].pageX - bcr.left,
+          e.changedTouches[0].pageY - bcr.top
+        );
+      }
     });
     App.$.canvas.addEventListener('dragover', (e) => {
       e.preventDefault();
@@ -193,14 +276,16 @@ const App = {
       const mouseY = e.clientY - rect.top;
 
       const currentCellSize = Number(App.$.cellSize.value);
-      const zoomFactor = currentCellSize <= 5
+      const zoomFactor = currentCellSize <= LOW_ZOOM_THRESHOLD
         ? (e.deltaY > 0 ? 0.5 : 1.5)
         : (e.deltaY > 0 ? 0.9 : 1.1);
-      const newCellSize = Math.max(1, Math.min(100, Math.round(currentCellSize * zoomFactor)));
+      const newCellSize = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(currentCellSize * zoomFactor)));
 
       if (newCellSize !== currentCellSize) {
         App.$.cellSize.value = String(newCellSize);
         App.$.cellSizeLabel.textContent = String(newCellSize);
+        UserPreferences.save({ cellSize: newCellSize });
+
         canvasWorkerMessage({
           type: CanvasWorkerMessageType.CellSizeChange,
           cellSize: newCellSize,
@@ -212,6 +297,7 @@ const App = {
 
     App.playback.state.update(App.$.playPause.textContent === 'PAUSE');
     App.settings.state.drawGrid = App.$.drawGrid.checked;
+    App.settings.state.drawAge = App.$.showAge.checked;
     App.speed.state.update(App.speed.convertSpeed(App.$.speed.value));
 
     const cellColourAttr = computed(() => `#${App.cellColour.state().toString(16).padStart(6, '0')}`);
@@ -229,7 +315,7 @@ const App = {
             App.speed.state.update(ev.speed);
             break;
           default:
-            console.error('unknown worker event type', ev)
+            console.error('unknown worker event type', ev);
         }
       }
     };
@@ -270,9 +356,11 @@ const App = {
       if (App.playback.state()) {
         App.$.next.disabled = true;
         App.$.playPause.textContent = 'PAUSE';
+        App.$.playPause.setAttribute('aria-label', 'Pause simulation');
       } else {
         App.$.next.disabled = false;
         App.$.playPause.textContent = 'PLAY';
+        App.$.playPause.setAttribute('aria-label', 'Start simulation');
       }
     });
 
@@ -292,6 +380,65 @@ const App = {
       App.$.speedLabel.textContent = `${speed.toFixed(0)} ms`;
     });
   },
+
+  // Pinch zoom support for mobile
+  pinchState: {
+    initialDistance: 0,
+    initialCellSize: 0,
+    centerX: 0,
+    centerY: 0
+  },
+
+  /**
+   * Initialize pinch zoom gesture tracking
+   * @param {TouchEvent} e - The touch start event with two touches
+   */
+  setupPinchZoom(e) {
+    const touch1 = e.touches[0];
+    const touch2 = e.touches[1];
+
+    const dx = touch2.clientX - touch1.clientX;
+    const dy = touch2.clientY - touch1.clientY;
+
+    App.pinchState.initialDistance = Math.sqrt(dx * dx + dy * dy);
+    App.pinchState.initialCellSize = Number(App.$.cellSize.value);
+    App.pinchState.centerX = (touch1.clientX + touch2.clientX) / 2;
+    App.pinchState.centerY = (touch1.clientY + touch2.clientY) / 2;
+  },
+
+  /**
+   * Handle pinch zoom gesture for mobile devices
+   * @param {TouchEvent} e - The touch move event with two touches
+   */
+  handlePinchZoom(e) {
+    if (App.pinchState.initialDistance === 0) {
+      return;
+    }
+
+    const touch1 = e.touches[0];
+    const touch2 = e.touches[1];
+
+    const dx = touch2.clientX - touch1.clientX;
+    const dy = touch2.clientY - touch1.clientY;
+    const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+    const scale = currentDistance / App.pinchState.initialDistance;
+    const newCellSize = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(App.pinchState.initialCellSize * scale)));
+
+    if (newCellSize !== Number(App.$.cellSize.value)) {
+      App.$.cellSize.value = String(newCellSize);
+      App.$.cellSizeLabel.textContent = String(newCellSize);
+      UserPreferences.save({ cellSize: newCellSize });
+
+      const rect = App.$.canvas.getBoundingClientRect();
+      canvasWorkerMessage({
+        type: CanvasWorkerMessageType.CellSizeChange,
+        cellSize: newCellSize,
+        mouseX: App.pinchState.centerX - rect.left,
+        mouseY: App.pinchState.centerY - rect.top
+      });
+    }
+  },
   cellColour: {
     state: signal(0xffffff),
   },
@@ -305,11 +452,53 @@ const App = {
       if (event.dataTransfer) {
         event.dataTransfer.setData('application/conwaymore', type)
         event.dataTransfer.effectAllowed = 'move'
+
+        const pattern = /** @type {import('./patterns').Pattern} */ (Patterns.get(type));
+        const cellSize = Math.round(Number(App.$.cellSize.value));
+
+        let maxX = -Infinity, maxY = -Infinity;
+        for (const cell of pattern.cells) {
+          maxX = Math.max(maxX, cell.x);
+          maxY = Math.max(maxY, cell.y);
+        }
+        const width = (maxX + 1) * cellSize;
+        const height = (maxY + 1) * cellSize;
+        App.$.patternDragContainer.style.cssText = `width: ${width}px; height: ${height}px;`;
+
+        const fragment = document.createDocumentFragment();
+        for (const cell of pattern.cells) {
+          const cellDiv = document.createElement('div');
+          const x = cell.x * cellSize;
+          const y = cell.y * cellSize;
+
+          cellDiv.style.cssText = `
+            position: absolute;
+            left: ${x}px;
+            top: ${y}px;
+            width: ${cellSize}px;
+            height: ${cellSize}px;
+            background-color: ${App.$.cellColour.value};
+          `;
+          fragment.appendChild(cellDiv);
+        }
+        App.$.patternDragContainer.appendChild(fragment);
+
+        event.dataTransfer.setDragImage(
+          App.$.patternDragContainer,
+          pattern.center_x * cellSize,
+          pattern.center_y * cellSize
+        );
+        requestAnimationFrame(() => {
+          App.$.patternDragContainer.textContent = '';
+        })
       }
       App.dragPattern.state.type = type;
       document.body.style.userSelect = 'none';
       document.addEventListener('drop', App.dragPattern.end)
     },
+    /**
+     * Clean up pattern drag state and event listeners
+     */
     end() {
       App.dragPattern.state.canvasDragOver = false;
       App.dragPattern.state.type = null;
@@ -375,7 +564,9 @@ const App = {
   speed: {
     state: signal(0),
     /**
-     * @param {string} attrValue 
+     * Convert speed slider value to milliseconds delay
+     * @param {string} attrValue - The slider value as a string
+     * @returns {number} - The delay in milliseconds (1-1000)
      */
     convertSpeed(attrValue) {
       return Math.max(1, 1000 - Math.sqrt(Number(attrValue)) * 100);

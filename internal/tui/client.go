@@ -99,11 +99,12 @@ func sendSpeed(conn *websocket.Conn, speed uint16) tea.Cmd {
 func saveGame(host string) tea.Cmd {
 	return func() tea.Msg {
 		u := url.URL{Scheme: "http", Host: host, Path: "/save"}
-		_, err := http.DefaultClient.Post(u.String(), "", nil)
+		resp, err := http.DefaultClient.Post(u.String(), "", nil)
 		if err != nil {
 			log.Printf("Error saving game: %v", err)
 			return saveGameResult{Err: err}
 		}
+		resp.Body.Close()
 		return saveGameResult{}
 	}
 }
@@ -124,6 +125,7 @@ func getWorldSize(host string) (uint, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer resp.Body.Close()
 	d, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, err

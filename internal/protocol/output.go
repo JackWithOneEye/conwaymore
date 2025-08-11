@@ -1,6 +1,8 @@
 package protocol
 
-import "errors"
+import (
+	"errors"
+)
 
 const cellsOffset = 6
 
@@ -11,24 +13,27 @@ type Output struct {
 	Speed      uint16
 }
 
-func (o *Output) Encode() []byte {
-	cellsCount := o.CellsCount
-	b := make([]byte, cellsOffset+cellsCount*bytesPerCell)
+func (o *Output) Encode(b []byte) {
+	// b := make([]byte, cellsOffset+cellsCount*bytesPerCell)
 
 	if o.Playing {
 		b[0] = 1
+	} else {
+		b[0] = 0
 	}
 
 	b[1] = byte(o.Speed >> 8)
 	b[2] = byte(o.Speed & 0x00ff)
 
-	b[3] = byte((cellsCount & 0xff0000) >> 16)
-	b[4] = byte((cellsCount & 0xff00) >> 8)
-	b[5] = byte(cellsCount & 0xff)
+	b[3] = byte((o.CellsCount & 0xff0000) >> 16)
+	b[4] = byte((o.CellsCount & 0xff00) >> 8)
+	b[5] = byte(o.CellsCount & 0xff)
 
 	encodeCells(o.Cells, o.CellsCount, b, 6)
+}
 
-	return b
+func (o *Output) EncodeSize() uint32 {
+	return cellsOffset + o.CellsCount*bytesPerCell
 }
 
 func (o *Output) Decode(b []byte) error {
