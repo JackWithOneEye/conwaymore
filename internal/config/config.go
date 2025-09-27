@@ -24,8 +24,8 @@ func NewConfig() *Config {
 	}
 
 	viper.AddConfigPath(".")
-	viper.SetConfigFile(".env")
-	viper.SetConfigType("env")
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
 	viper.AutomaticEnv()
 	err := viper.ReadInConfig()
 	if err != nil {

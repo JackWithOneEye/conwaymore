@@ -18,58 +18,60 @@ func (ac *aliveCell) Values() (x, y uint16, colour uint32, age uint16) {
 }
 
 type swapSet[V any] struct {
-	current uint8
-	sets    [2]map[uint32]V
+	current map[uint32]V
+	next    map[uint32]V
 }
 
 func newSwapSet[V any](capacity uint) *swapSet[V] {
 	return &swapSet[V]{
-		current: 0,
-		sets:    [2]map[uint32]V{make(map[uint32]V, capacity), make(map[uint32]V, capacity)},
+		current: make(map[uint32]V, capacity),
+		next:    make(map[uint32]V, capacity),
 	}
 }
 
 func (sws *swapSet[V]) add(x, y uint16, data V) {
-	sws.sets[sws.current][toCoord(x, y)] = data
+	sws.current[toCoord(x, y)] = data
 }
 
 func (sws *swapSet[V]) addNext(x, y uint16, data V) {
-	sws.sets[sws.current^1][toCoord(x, y)] = data
+	sws.next[toCoord(x, y)] = data
 }
 
 func (sws *swapSet[V]) addNextByKey(key uint32, data V) {
-	sws.sets[sws.current^1][key] = data
+	sws.next[key] = data
 }
 
 func (sws *swapSet[V]) clearAll() {
-	clear(sws.sets[0])
-	clear(sws.sets[1])
+	clear(sws.current)
+	clear(sws.next)
 }
 
 func (sws *swapSet[V]) clearNext() {
-	clear(sws.sets[sws.current^1])
+	clear(sws.next)
 }
 
 func (sws *swapSet[V]) get(x, y uint16) (V, bool) {
-	d, ok := sws.sets[sws.current][toCoord(x, y)]
+	d, ok := sws.current[toCoord(x, y)]
 	return d, ok
 }
 
 func (sws *swapSet[V]) size() int {
-	return len(sws.sets[sws.current])
+	return len(sws.current)
 }
 
 func (sws *swapSet[V]) swap() {
-	sws.current ^= 1
+	tmp := sws.current
+	sws.current = sws.next
+	sws.next = tmp
 }
 
 func (sws *swapSet[V]) values() map[uint32]V {
-	return sws.sets[sws.current]
+	return sws.current
 }
 
 func (sws *swapSet[V]) iter() iter.Seq2[uint16, uint16] {
 	return func(yield func(uint16, uint16) bool) {
-		for key := range sws.sets[sws.current] {
+		for key := range sws.current {
 			x := uint16(key >> 16)
 			y := uint16(key)
 			if !yield(x, y) {

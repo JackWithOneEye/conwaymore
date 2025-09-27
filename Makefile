@@ -18,5 +18,8 @@ clean:
 test-integration:
 	go test -v ./tests/integration/...
 
+bench-conway:
+	go test -v -bench=. -count=10 -benchmem ./tests/benchmarks/conway/...
+
 terminal:
 	go run cmd/terminal/main.go

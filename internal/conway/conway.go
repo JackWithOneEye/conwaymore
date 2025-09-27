@@ -24,7 +24,7 @@ type conway struct {
 	axisLength uint
 	wrapMask   uint16
 	aliveCells *swapSet[aliveCell]
-	candidates *swapSet[struct{}]
+	candidates *swapSet[uint16]
 }
 
 func NewConway(cfg ConwayConfig) Conway {
@@ -34,7 +34,7 @@ func NewConway(cfg ConwayConfig) Conway {
 		axisLength: axisLength,
 		wrapMask:   uint16(axisLength) - 1,
 		aliveCells: newSwapSet[aliveCell](axisLength),
-		candidates: newSwapSet[struct{}](axisLength),
+		candidates: newSwapSet[uint16](axisLength),
 	}
 }
 
@@ -68,11 +68,11 @@ func (c *conway) NextGen() {
 	c.aliveCells.clearNext()
 	c.candidates.clearNext()
 	for key := range c.aliveCells.values() {
-		c.candidates.addNextByKey(key, struct{}{})
+		c.candidates.addNextByKey(key, 0)
 	}
 
 	var aliveNeighbours [8]aliveCell
-	anIdx := 0
+	var anIdx uint
 	findAlive := func(x, y uint16) int {
 		if ac, ok := c.aliveCells.get(x, y); ok {
 			aliveNeighbours[anIdx] = ac
@@ -82,19 +82,34 @@ func (c *conway) NextGen() {
 		return 0
 	}
 
+	getNumNeighbours := func(xLeft, x, xRight, yUp, y, yDown uint16) int {
+		numNeighbours := findAlive(xLeft, yUp) +
+			findAlive(x, yUp) +
+			findAlive(xRight, yUp) +
+			findAlive(xLeft, y)
+		if numNeighbours == 4 {
+			return numNeighbours
+		}
+		numNeighbours += findAlive(xRight, y)
+		if numNeighbours == 4 {
+			return numNeighbours
+		}
+		numNeighbours += findAlive(xLeft, yDown)
+		if numNeighbours == 4 {
+			return numNeighbours
+		}
+		numNeighbours += findAlive(x, yDown)
+		if numNeighbours == 4 {
+			return numNeighbours
+		}
+		return numNeighbours + findAlive(xRight, yDown)
+	}
+
 	for x, y := range c.candidates.iter() {
 		xLeft, xRight, yUp, yDown := c.getAdjacent(x, y)
 
 		anIdx = 0
-		numNeighbours := findAlive(xLeft, yUp) +
-			findAlive(x, yUp) +
-			findAlive(xRight, yUp) +
-			findAlive(xLeft, y) +
-			findAlive(xRight, y) +
-			findAlive(xLeft, yDown) +
-			findAlive(x, yDown) +
-			findAlive(xRight, yDown)
-
+		numNeighbours := getNumNeighbours(xLeft, x, xRight, yUp, y, yDown)
 		ac, alive := c.aliveCells.get(x, y)
 
 		addCands := false
@@ -113,15 +128,15 @@ func (c *conway) NextGen() {
 			addCands = true
 		}
 		if addCands {
-			c.candidates.addNext(xLeft, yUp, struct{}{})
-			c.candidates.addNext(x, yUp, struct{}{})
-			c.candidates.addNext(xRight, yUp, struct{}{})
-			c.candidates.addNext(xLeft, y, struct{}{})
-			c.candidates.addNext(x, y, struct{}{})
-			c.candidates.addNext(xRight, y, struct{}{})
-			c.candidates.addNext(xLeft, yDown, struct{}{})
-			c.candidates.addNext(x, yDown, struct{}{})
-			c.candidates.addNext(xRight, yDown, struct{}{})
+			c.candidates.addNext(xLeft, yUp, 0)
+			c.candidates.addNext(x, yUp, 0)
+			c.candidates.addNext(xRight, yUp, 0)
+			c.candidates.addNext(xLeft, y, 0)
+			c.candidates.addNext(x, y, 0)
+			c.candidates.addNext(xRight, y, 0)
+			c.candidates.addNext(xLeft, yDown, 0)
+			c.candidates.addNext(x, yDown, 0)
+			c.candidates.addNext(xRight, yDown, 0)
 		}
 	}
 
@@ -152,15 +167,15 @@ func (c *conway) SetCell(x, y uint16, colour uint32, age uint16) {
 
 func (c *conway) addCandidates(x, y uint16) {
 	xLeft, xRight, yUp, yDown := c.getAdjacent(x, y)
-	c.candidates.add(xLeft, yUp, struct{}{})
-	c.candidates.add(x, yUp, struct{}{})
-	c.candidates.add(xRight, yUp, struct{}{})
-	c.candidates.add(xLeft, y, struct{}{})
-	c.candidates.add(x, y, struct{}{})
-	c.candidates.add(xRight, y, struct{}{})
-	c.candidates.add(xLeft, yDown, struct{}{})
-	c.candidates.add(x, yDown, struct{}{})
-	c.candidates.add(xRight, yDown, struct{}{})
+	c.candidates.add(xLeft, yUp, 0)
+	c.candidates.add(x, yUp, 0)
+	c.candidates.add(xRight, yUp, 0)
+	c.candidates.add(xLeft, y, 0)
+	c.candidates.add(x, y, 0)
+	c.candidates.add(xRight, y, 0)
+	c.candidates.add(xLeft, yDown, 0)
+	c.candidates.add(x, yDown, 0)
+	c.candidates.add(xRight, yDown, 0)
 }
 
 func (c *conway) getAdjacent(x, y uint16) (xLeft, xRight, yUp, yDown uint16) {
