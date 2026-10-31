@@ -40,3 +40,6 @@ node_modules/
 test.db
 .DS_Store
 debug.log
+
+# Amp orbs
+.amp/portals/*

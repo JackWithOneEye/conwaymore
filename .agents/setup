@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb: Go toolchain (version from go.mod), templ, Bun
+# dependencies, and warm Go module/build caches.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+step() {
+  local name="$1"
+  shift
+  local start=$SECONDS
+  echo "==> $name"
+  "$@"
+  echo "    $name took $((SECONDS - start))s"
+}
+
+go_version="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+
+install_go() {
+  if [[ "$(/usr/local/go/bin/go env GOVERSION 2>/dev/null)" == "go$go_version" ]]; then
+    echo "    go$go_version already installed"
+  else
+    curl -fsSL "https://go.dev/dl/go$go_version.linux-amd64.tar.gz" -o /tmp/go.tgz
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf /tmp/go.tgz
+    rm -f /tmp/go.tgz
+  fi
+  # /usr/local/bin is on PATH for Amp, login shells, and orb services.
+  ln -sf /usr/local/go/bin/go /usr/local/go/bin/gofmt /usr/local/bin/
+}
+
+install_templ() {
+  # Generated *_templ.go files must match the templ runtime version in go.mod.
+  local version
+  version="$(go list -m -f '{{.Version}}' github.com/a-h/templ)"
+  if [[ "$(templ version 2>/dev/null)" == "$version" ]]; then
+    echo "    templ $version already installed"
+  else
+    GOBIN=/usr/local/bin go install "github.com/a-h/templ/cmd/templ@$version"
+  fi
+}
+
+warm_go_caches() {
+  templ generate
+  go build ./...
+  GOOS=js GOARCH=wasm go build -o /dev/null ./cmd/wasm
+  go test -count=1 -run '^$' ./... >/dev/null
+}
+
+step "Go toolchain" install_go
+export GOTOOLCHAIN=local
+step "Go modules" go mod download
+step "templ" install_templ
+step "Bun dependencies" bun install --frozen-lockfile
+step "Go build cache" warm_go_caches
