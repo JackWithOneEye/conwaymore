@@ -6,7 +6,7 @@ A real-time Conway's Game of Life implementation with WebSocket communication, f
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.27+
 - Bun (for frontend dependencies)
 - air (for development)
 
