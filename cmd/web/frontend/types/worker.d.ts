@@ -61,6 +61,8 @@ export declare type SettingsChangeMessage = {
   type: typeof CanvasWorkerMessageType.SettingsChange;
   drawAge: boolean;
   drawGrid: boolean;
+  backgroundColour: number;
+  gridColour: number;
 };
 
 export declare type CanvasWorkerMessage = CanvasWorkerInitMessage

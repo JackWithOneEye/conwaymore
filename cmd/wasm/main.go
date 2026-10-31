@@ -236,7 +236,12 @@ func handleSetSpeed(data js.Value) js.Value {
 }
 
 func handleSettingsChange(data js.Value) {
-	drawer.SetSettings(data.Get("drawAge").Bool(), data.Get("drawGrid").Bool())
+	drawer.SetSettings(
+		data.Get("drawAge").Bool(),
+		data.Get("drawGrid").Bool(),
+		uint32(data.Get("backgroundColour").Int()),
+		uint32(data.Get("gridColour").Int()),
+	)
 }
 
 func onMessage(msgEvt js.Value) js.Value {

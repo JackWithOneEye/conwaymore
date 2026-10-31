@@ -118,7 +118,7 @@ func (s *server) registerRoutes() http.Handler {
 	}))
 
 	r.GET("/game", func(c *gin.Context) {
-		templ.Handler(web.Game("#ffffff", 30, float64(s.engine.Speed()), s.engine.Playing(), patterns.Patterns)).ServeHTTP(c.Writer, c.Request)
+		templ.Handler(web.Game("#ff6600", 30, float64(s.engine.Speed()), s.engine.Playing(), patterns.Patterns)).ServeHTTP(c.Writer, c.Request)
 	})
 
 	r.GET("/globals", func(c *gin.Context) {

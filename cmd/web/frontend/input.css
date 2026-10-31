@@ -1,15 +1,386 @@
 @import 'tailwindcss';
 
-/* Keep Tailwind v3's system font stack; v4 changed the default `font-sans`. */
-@theme {
-  --font-sans: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-    'Noto Color Emoji';
+@font-face {
+  font-family: 'Silkscreen';
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/silkscreen-400.woff2') format('woff2');
 }
 
-/* Tailwind v4 preflight resets buttons to `cursor: default`; keep the v3 pointer. */
+@font-face {
+  font-family: 'Silkscreen';
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/silkscreen-700.woff2') format('woff2');
+}
+
+/* Phones in either orientation: hide captions and headings, use bigger touch targets. */
+@custom-variant compact {
+  @media (width < 40rem), (height < 32rem) {
+    @slot;
+  }
+}
+
+@theme {
+  --font-pixel: 'Silkscreen', ui-monospace, monospace;
+}
+
+/*
+ * Palette. The canvas colours are read by index.js and handed to the WASM renderer,
+ * so keep them as plain #rrggbb values.
+ */
+:root {
+  color-scheme: light;
+  --canvas-bg: #f2f2f2;
+  --canvas-grid: #d6d6d6;
+  --panel: #ffffff;
+  --ink: #111111;
+  --muted: #9a9a9a;
+  --line: #111111;
+  --accent: #ff6600;
+  --accent-ink: #ffffff;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas-bg: #0a0a0a;
+  --canvas-grid: #262626;
+  --panel: #161616;
+  --ink: #e4e4e4;
+  --muted: #6b6b6b;
+  --line: #cfcfcf;
+  --accent: #ff6a00;
+  --accent-ink: #0a0a0a;
+}
+
 @layer base {
+  /* Tailwind v4 preflight resets buttons to `cursor: default`; keep the v3 pointer. */
   button:not(:disabled),
   [role='button']:not(:disabled) {
     cursor: pointer;
+  }
+
+  body {
+    background: var(--canvas-bg);
+    color: var(--ink);
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    line-height: 1.5;
+    text-transform: uppercase;
+    -webkit-font-smoothing: none;
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Floating panel with crosshair marks on its corners. */
+  .hud {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+  }
+
+  .hud::before {
+    --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 9'%3E%3Cpath d='M4 0h1v9H4zM0 4h9v1H0z'/%3E%3C/svg%3E");
+    content: '';
+    position: absolute;
+    inset: -5px;
+    pointer-events: none;
+    background: var(--line);
+    mask:
+      var(--cross) top left / 9px no-repeat,
+      var(--cross) top right / 9px no-repeat,
+      var(--cross) bottom left / 9px no-repeat,
+      var(--cross) bottom right / 9px no-repeat;
+  }
+
+  .hud-label {
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  .hud-label > span {
+    color: var(--muted);
+  }
+
+  /*
+   * Control deck: a 2x2 grid whose rows share column widths, so the dividers line up.
+   * It becomes one row once there is room: tablets and up, and compact phones in landscape.
+   */
+  .deck {
+    display: grid;
+    grid-template-columns: auto 1fr;
+  }
+
+  .deck > * {
+    padding: 12px 16px;
+    border-color: var(--muted);
+  }
+
+  .deck > :nth-child(even) {
+    border-left-width: 1px;
+  }
+
+  .deck > :nth-child(n + 3) {
+    border-top-width: 1px;
+  }
+
+  @media (width >= 48rem), (width >= 40rem) and (height < 32rem) {
+    .deck {
+      display: flex;
+    }
+
+    .deck > * {
+      border-width: 0;
+    }
+
+    .deck > * + * {
+      border-left-width: 1px;
+    }
+  }
+
+  @media (width < 40rem), (height < 32rem) {
+    .deck > * {
+      padding: 8px 12px;
+    }
+  }
+
+  /* Square pixel button with its label underneath. */
+  .px-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-width: 36px;
+    color: var(--ink);
+  }
+
+  .px-btn > svg {
+    box-sizing: content-box;
+    width: 14px;
+    height: 14px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  /* Bigger touch targets on phones, where the captions are hidden. */
+  @media (width < 40rem), (height < 32rem) {
+    .px-btn > svg {
+      padding: 12px;
+    }
+  }
+
+  .px-btn:hover:not(:disabled, [data-primary]) > svg {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .px-btn:active:not(:disabled) > svg,
+  .px-btn[data-primary] > svg {
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .px-btn:disabled {
+    color: var(--muted);
+  }
+
+  .px-btn:disabled > svg {
+    border-color: var(--muted);
+  }
+
+  .px-btn:focus-visible {
+    outline: none;
+  }
+
+  .px-btn:focus-visible > svg {
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Bordered text button used in the top-right panel. */
+  .px-text-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    color: var(--ink);
+  }
+
+  .px-text-btn:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .px-text-btn:disabled {
+    color: var(--muted);
+    border-color: var(--muted);
+  }
+
+  .theme-opt {
+    padding: 1px 3px;
+    color: var(--muted);
+  }
+
+  :root:not([data-theme='dark']) .theme-opt[data-opt='light'],
+  :root[data-theme='dark'] .theme-opt[data-opt='dark'] {
+    color: var(--accent-ink);
+    background: var(--accent);
+  }
+
+  .px-check {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    cursor: pointer;
+  }
+
+  .px-check:checked {
+    border-color: var(--accent);
+    background: var(--accent)
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' shape-rendering='crispEdges'%3E%3Cpath fill='white' d='M7 2h1v1h1v1H8v1H7v1H6v1H5v1H4V7H3V6H2V5h1v1h1v1h1V6h1V5h1V4h1z'/%3E%3C/svg%3E")
+      center / 10px no-repeat;
+  }
+
+  .px-swatch {
+    width: 30px;
+    height: 30px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .px-swatch:hover,
+  .px-swatch[aria-expanded='true'] {
+    border-color: var(--accent);
+  }
+
+  .px-swatch > span {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .colour-preset {
+    width: 20px;
+    height: 20px;
+    border: 1px solid transparent;
+    background: var(--swatch) padding-box;
+  }
+
+  .colour-preset:hover,
+  .colour-preset[aria-pressed='true'] {
+    border-color: var(--line);
+    box-shadow: inset 0 0 0 2px var(--panel);
+  }
+
+  .colour-preset[aria-pressed='true'] {
+    border-color: var(--accent);
+  }
+
+  .colour-hex {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+  }
+
+  .colour-hex:has(:focus-visible) {
+    border-color: var(--accent);
+  }
+
+  .colour-hex:has([aria-invalid='true']) {
+    border-color: #e53935;
+  }
+
+  .colour-hex > input {
+    width: 7ch;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    text-transform: uppercase;
+    outline: none;
+  }
+
+  /* Zoom: a range input drawn as a row of squares, lit up to the current value. */
+  .zoom-range {
+    appearance: none;
+    width: 108px;
+    height: 10px;
+    background: linear-gradient(to right, var(--accent) 0 var(--fill, 0%), var(--muted) var(--fill, 0%));
+    mask: repeating-linear-gradient(to right, #000 0 10px, transparent 10px 14px);
+    cursor: pointer;
+  }
+
+  .zoom-range::-webkit-slider-thumb {
+    appearance: none;
+    width: 10px;
+    height: 10px;
+  }
+
+  .zoom-range::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border: none;
+    background: transparent;
+  }
+
+  .zoom-range:focus-visible {
+    outline: none;
+  }
+
+  .zoom:has(:focus-visible),
+  .dial:has(:focus-visible) {
+    outline: 1px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  .dial {
+    width: 46px;
+    height: 46px;
+    color: var(--muted);
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .dial:active {
+    cursor: grabbing;
+  }
+
+  .dial [data-lit],
+  .dial [data-pointer] {
+    color: var(--accent);
+  }
+
+  .pattern-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 4px;
+    cursor: grab;
+  }
+
+  .pattern-item:hover {
+    color: var(--accent);
+  }
+
+  .pattern-item > svg {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 2px;
+    border: 1px solid currentColor;
+    background: var(--panel);
   }
 }

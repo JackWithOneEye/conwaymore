@@ -9,117 +9,198 @@ import (
 templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps map[string]*patterns.Pattern) {
 	<script src="assets/js/index.js"></script>
 	@templ.JSONScript("patterns", ps)
-	<div class="flex flex-col flex-1 gap-x-4 gap-y-4 overflow-auto">
-		<div class="w-full bg-slate-950 border border-gray-50 rounded-lg shadow-sm flex-1 flex flex-col overflow-hidden">
-			<div class="flex flex-wrap justify-between gap-2 p-2 md:gap-4">
-				// pattern menu toggle
-				@golButton("pattern-menu-toggle", "PATTERNS", false, "Toggle pattern menu")
-				<div class="flex gap-1 md:gap-2">
-					// clear
-					@golButton("clear", "CLEAR", false, "Clear all cells from the grid")
-					// random
-					@golButton("random", "RANDOM", false, "Fill grid with random cells")
-				</div>
-				// cell size
-				@golSlider("cell-size", "Cell Size", fmt.Sprintf("%d", cellSize), fmt.Sprintf("%d", cellSize))
-				// cell colour
-				<div class="flex flex-col text-xs w-28 md:w-32">
-					<label for="cell-colour">Cell Colour</label>
-					<div class="flex items-center gap-1">
-						<input
-							id="cell-colour"
-							class="h-8 w-8 md:h-5 md:w-5"
-							type="color"
-							value={ cellColourHex }
-							aria-label="Select cell colour"
-						/>
-						<button
-							id="random-colour"
-							class="hover:bg-slate-600 p-1 min-h-8 md:min-h-6"
-							aria-label="Generate random colour"
-						>{ cellColourHex }</button>
-					</div>
-				</div>
-				<div class="flex flex-col gap-1">
-					<div class="flex gap-2 items-center text-xs">
-						<input id="show-age" class="h-5 w-5" type="checkbox"/>
-						<label for="show-age">Age</label>
-					</div>
-					<div class="flex gap-2 items-center text-xs">
-						<input id="draw-grid" class="h-5 w-5" type="checkbox" checked/>
-						<label for="draw-grid">Grid</label>
-					</div>
-				</div>
-				// speed
-				@golSlider("speed", "Speed", fmt.Sprintf("%f", math.Pow((1000.0-speedMs)*0.01, 2.0)), fmt.Sprintf("%.0f ms",
-					speedMs))
-				<div class="flex gap-1 md:gap-2">
-					// next
-					@golButton("next", "NEXT", playing, "Advance to next generation")
-					// play / pause
-					@golButton("play-pause", func() string {
-						if playing {
-							return "PAUSE"
-						}
-						return "PLAY"
-					}(), false, func() string {
-						if playing {
-							return "Pause simulation"
-						}
-						return "Start simulation"
-					}())
-				</div>
-			</div>
-			<div
-				id="pattern-menu"
-				class="hidden transition-transform flex-wrap border-2 border-gray-300 gap-2 p-2 mx-1 data-[open=true]:flex data-[open=true]:transition-none"
+	<div id="canvas-wrapper" class="absolute inset-0">
+		<canvas class="block data-dragging:cursor-grab data-dragover:opacity-80" width="100" height="100">
+			get yourself a new browser
+		</canvas>
+	</div>
+	<div class="absolute -left-full top-0">
+		<div id="pattern-drag-container" class="relative bg-transparent"></div>
+	</div>
+	// The patterns panel and the control deck share one column, so the open panel shrinks
+	// (its list scrolls) instead of running into the deck. Clicks between them reach the grid.
+	<div class="pointer-events-none absolute inset-x-3 top-16 bottom-3 z-10 flex flex-col items-start gap-5">
+		// 05 / patterns
+		<section class="hud pointer-events-auto flex min-h-0 flex-col">
+			<button
+				id="pattern-menu-toggle"
+				class="hud-label flex items-center justify-between gap-6 px-3 py-2 hover:text-(--accent)"
+				aria-expanded="false"
+				aria-controls="pattern-menu"
 			>
+				<span class="text-(--ink)"><span class="text-(--muted)">05 /</span> Patterns</span>
+				<span id="pattern-menu-icon" aria-hidden="true">+</span>
+			</button>
+			<div id="pattern-menu" class="flex min-h-0 flex-col border-t border-(--line)" hidden>
 				<template id="pattern">
-					<div class="p-1 border border-gray-300 cursor-pointer" draggable="true">
+					<div class="pattern-item" draggable="true">
+						<svg viewBox="0 0 1 1" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor"></path></svg>
 						<span></span>
 					</div>
 				</template>
-				<div class="absolute -left-full">
-					<div id="pattern-drag-container" class="relative bg-transparent"></div>
-				</div>
+				<div id="pattern-list" class="flex min-h-0 flex-col overflow-y-auto p-2"></div>
+				<p class="border-t border-(--line) px-3 py-2 text-center text-(--muted)">Drag onto grid</p>
 			</div>
-			<div class="flex flex-1 p-1 overflow-hidden">
-				<div class="w-full p-1 border border-white">
-					<div id="canvas-wrapper" class="relative h-full">
-						<canvas class="data-dragging:cursor-grab data-dragover:bg-gray-400/10" width="100" height="100">
-							get yourself a new browser
-						</canvas>
+		</section>
+		// control deck (layout: .deck in input.css)
+		<section class="hud pointer-events-auto mt-auto w-max max-w-full shrink-0 self-center max-sm:w-full">
+			<div class="deck">
+				// 01 / playback
+				<div class="flex flex-col gap-2">
+					@hudLabel("", "01", "Playback")
+					<div class="flex gap-2 compact:gap-1.5">
+						@pxButton("next", "Step", playing, "Advance to next generation", nil) {
+							<path d="M1 0h1v7H1zM2 1h1v5H2zM3 2h1v3H3zM4 3h1v1H4zM6 0h1v7H6z"></path>
+						}
+						@pxButton("play-pause", playPauseLabel(playing), false, playPauseAriaLabel(playing), templ.Attributes{"data-primary": true, "data-playing": playing}) {
+							<path class="group-data-playing:hidden" d="M1 0h1v7H1zM2 1h1v5H2zM3 2h1v3H3zM4 3h1v1H4z" transform="translate(1 0)"></path>
+							<path class="hidden group-data-playing:block" d="M1 0h2v7H1zM4 0h2v7H4z"></path>
+						}
+						@pxButton("clear", "Clear", false, "Clear all cells from the grid", nil) {
+							<path d="M1 1h5v5H1z"></path>
+						}
+						@pxButton("random", "Random", false, "Fill grid with random cells", nil) {
+							@diceIcon()
+						}
+					</div>
+				</div>
+				// 02 / speed
+				<div class="flex flex-col gap-2">
+					@hudLabel("speed", "02", "Speed")
+					<div class="flex items-center gap-3 compact:gap-2">
+						<div id="speed-dial" class="dial relative">
+							<svg class="size-full" viewBox="0 0 23 23" shape-rendering="crispEdges" aria-hidden="true">
+								<path id="speed-arc" fill="currentColor"></path>
+								<path id="speed-arc-lit" data-lit fill="currentColor"></path>
+								<path id="speed-pointer" data-pointer fill="currentColor"></path>
+							</svg>
+							<input
+								id="speed"
+								class="sr-only"
+								type="range"
+								min="1"
+								max="100"
+								value={ fmt.Sprintf("%f", math.Pow((1000.0-speedMs)*0.01, 2.0)) }
+								aria-valuetext={ fmt.Sprintf("%.0f ms", speedMs) }
+							/>
+						</div>
+						<span id="speed-label" class="w-12">{ fmt.Sprintf("%.0f ms", speedMs) }</span>
+					</div>
+				</div>
+				// 03 / zoom
+				<div class="flex flex-col gap-2">
+					@hudLabel("zoom", "03", "Zoom")
+					<div class="zoom flex h-[46px] items-center gap-3">
+						<input
+							id="zoom"
+							class="zoom-range"
+							type="range"
+							min="1"
+							max="100"
+							value={ fmt.Sprintf("%d", cellSize) }
+							aria-valuetext={ fmt.Sprintf("%d×", cellSize) }
+						/>
+						<span id="zoom-label" class="w-8">{ fmt.Sprintf("%d×", cellSize) }</span>
+					</div>
+				</div>
+				// 04 / cells
+				<div class="flex flex-col gap-2">
+					@hudLabel("cell-colour-toggle", "04", "Cells")
+					<div class="flex h-[46px] items-center gap-3">
+						<button
+							id="cell-colour-toggle"
+							class="px-swatch"
+							popovertarget="colour-popover"
+							aria-label="Choose cell colour"
+							title={ cellColourHex }
+						>
+							<span id="cell-colour-preview" style={ templ.SafeCSS("background:" + cellColourHex) }></span>
+						</button>
+						<div class="flex flex-col gap-2">
+							<label class="flex items-center gap-2">
+								<input id="draw-grid" class="px-check" type="checkbox" checked/>
+								Grid
+							</label>
+							<label class="flex items-center gap-2">
+								<input id="show-age" class="px-check" type="checkbox"/>
+								Age
+							</label>
+						</div>
 					</div>
 				</div>
 			</div>
+		</section>
+	</div>
+	<div id="colour-popover" class="hud fixed m-0 w-max overflow-visible p-3 text-(--ink)" popover>
+		<p class="hud-label mb-3"><span>04 /</span> Cell colour</p>
+		<div id="colour-presets" class="grid grid-cols-8 gap-1">
+			for _, c := range cellColourPresets {
+				<button class="colour-preset" data-colour={ c } aria-label={ c } title={ c } style={ templ.SafeCSS("--swatch:" + c) }></button>
+			}
+		</div>
+		<div class="mt-3 flex items-center gap-2">
+			<label class="colour-hex">
+				<span class="text-(--muted)">Hex</span>
+				<input id="colour-hex" type="text" maxlength="7" spellcheck="false" autocomplete="off" value={ cellColourHex }/>
+			</label>
+			<button id="random-colour" class="px-text-btn" aria-label="Random colour">
+				<svg class="size-[14px]" viewBox="0 0 7 7" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true">
+					@diceIcon()
+				</svg>
+			</button>
+			<button id="colour-more" class="px-text-btn">More…</button>
+			// Full native picker, opened by "More…".
+			<input id="cell-colour" class="sr-only" type="color" value={ cellColourHex } tabindex="-1" aria-hidden="true"/>
 		</div>
 	</div>
 }
 
-templ golButton(id, label string, disabled bool, ariaLabel string) {
+// Mid-tone presets that stay visible on both the light and the dark grid.
+var cellColourPresets = []string{
+	"#ff6600", "#ff3b30", "#e0218a", "#b620e0", "#7b3fe4", "#4a5bff", "#1e88e5", "#00a3c4",
+	"#00b39b", "#18a957", "#6fbf00", "#b8c400", "#f5c400", "#e09a00", "#a0522d", "#8a8a8a",
+}
+
+func playPauseLabel(playing bool) string {
+	if playing {
+		return "PAUSE"
+	}
+	return "PLAY"
+}
+
+func playPauseAriaLabel(playing bool) string {
+	if playing {
+		return "Pause simulation"
+	}
+	return "Start simulation"
+}
+
+// hudLabel renders a numbered section heading such as "01 / Playback".
+// With a non-empty forID it labels that control.
+templ hudLabel(forID, index, text string) {
+	if forID != "" {
+		<label for={ forID } class="hud-label compact:sr-only"><span>{ index } /</span> { text }</label>
+	} else {
+		<span class="hud-label compact:sr-only"><span>{ index } /</span> { text }</span>
+	}
+}
+
+templ pxButton(id, label string, disabled bool, ariaLabel string, attrs templ.Attributes) {
 	<button
 		id={ id }
-		class="text-sm px-2 py-1 md:px-1 border border-white active:bg-slate-800 data-active:bg-slate-800 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none min-h-[44px] md:min-h-[32px] touch-manipulation"
+		class="px-btn group touch-manipulation"
 		disabled?={ disabled }
 		aria-label={ ariaLabel }
+		{ attrs... }
 	>
-		{ label }
+		<svg viewBox="0 0 7 7" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true">
+			{ children... }
+		</svg>
+		<span id={ id + "-label" } class="compact:sr-only">{ label }</span>
 	</button>
 }
 
-templ golSlider(id, label string, value string, valueLabel string) {
-	<div class="flex flex-col text-xs">
-		<label for={ id }>{ label }</label>
-		<div class="flex items-center gap-1">
-			<input
-				id={ id }
-				type="range"
-				min="1"
-				value={ value }
-				class="min-h-[44px] md:min-h-[24px] touch-manipulation"
-				aria-valuetext={ valueLabel }
-			/>
-			<span id={ id + "-label" } class="w-12 text-center">{ valueLabel }</span>
-		</div>
-	</div>
+templ diceIcon() {
+	<path fill-rule="evenodd" d="M0 0h7v7H0zM1 1v5h5V1z"></path>
+	<path d="M2 2h1v1H2zM4 4h1v1H4zM3 3h1v1H3z"></path>
 }

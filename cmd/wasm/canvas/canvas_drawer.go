@@ -4,6 +4,7 @@
 package canvas
 
 import (
+	"fmt"
 	"math"
 	"syscall/js"
 
@@ -17,7 +18,7 @@ type CanvasDrawer interface {
 	PixelToCellCoord(px, py int) (x, y uint16)
 	SetCellSize(cellSize, mouseX, mouseY int)
 	SetDimensions(height, width int)
-	SetSettings(age bool, grid bool)
+	SetSettings(age, grid bool, backgroundColour, gridColour uint32)
 	SumCoords(coords ...uint16) uint16
 }
 
@@ -53,6 +54,9 @@ type canvasDrawer struct {
 	drawMode drawMode
 	grid     bool
 
+	backgroundColour uint32
+	gridColour       string
+
 	// ImageData batch rendering
 	imageData    js.Value
 	pixelCount   int
@@ -82,6 +86,9 @@ func NewCanvasDrawer(canvas js.Value, axisLength, cellSize, height, width int) C
 		drawMode: drawColour,
 		grid:     true,
 
+		backgroundColour: 0xf2f2f2,
+		gridColour:       "#d6d6d6",
+
 		colorCache: lrucache.NewLruCache[uint32, string](256),
 	}
 
@@ -97,13 +104,15 @@ func (cd *canvasDrawer) Draw(cells []protocol.Cell) {
 	// 	log.Printf("??? %d", dur)
 	// }()
 
-	// Clear canvas with white background
-	cd.ctx.Set("fillStyle", "#ffffff")
-	cd.ctx.Call("fillRect", 0, 0, cd.canvasWidth, cd.canvasHeight)
-
-	// Clear byte buffer to prevent ghost cells
-	for i := range cd.byteBuffer {
-		cd.byteBuffer[i] = 0
+	// Reset the pixel buffer to the background colour to prevent ghost cells
+	r := byte(cd.backgroundColour >> 16)
+	g := byte(cd.backgroundColour >> 8)
+	b := byte(cd.backgroundColour)
+	for i := 0; i < len(cd.byteBuffer); i += 4 {
+		cd.byteBuffer[i] = r
+		cd.byteBuffer[i+1] = g
+		cd.byteBuffer[i+2] = b
+		cd.byteBuffer[i+3] = 0xff
 	}
 
 	// Batch draw cells to pixel buffer
@@ -123,7 +132,7 @@ func (cd *canvasDrawer) Draw(cells []protocol.Cell) {
 	showGrid := cd.grid && cd.cellSize >= gridMinPx
 	if showGrid {
 		cd.ctx.Call("beginPath")
-		cd.ctx.Set("strokeStyle", "#cccccc") // Light gray grid
+		cd.ctx.Set("strokeStyle", cd.gridColour)
 		cd.ctx.Set("lineWidth", gridLineWidth)
 		cd.drawGrid()
 	}
@@ -201,7 +210,7 @@ func (cd *canvasDrawer) SetDimensions(height, width int) {
 	}
 }
 
-func (cd *canvasDrawer) SetSettings(age bool, drawGrid bool) {
+func (cd *canvasDrawer) SetSettings(age, drawGrid bool, backgroundColour, gridColour uint32) {
 	if age {
 		cd.drawMode = drawAge
 	} else {
@@ -209,6 +218,8 @@ func (cd *canvasDrawer) SetSettings(age bool, drawGrid bool) {
 	}
 
 	cd.grid = drawGrid
+	cd.backgroundColour = backgroundColour
+	cd.gridColour = fmt.Sprintf("#%06x", gridColour&0xffffff)
 }
 
 func (cd *canvasDrawer) SumCoords(coords ...uint16) uint16 {

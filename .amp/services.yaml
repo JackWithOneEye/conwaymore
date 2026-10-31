@@ -1,0 +1,7 @@
+services:
+  web:
+    # The server reads PORT from the environment (internal/config), overriding config.yaml.
+    command: make build && ./bin/main
+    health: /
+    portal:
+      title: Conway's Game of Life

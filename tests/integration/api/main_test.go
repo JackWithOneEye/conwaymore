@@ -86,7 +86,7 @@ func (suite *APITestSuite) TestGameState() {
 		// Verify the response contains the expected game state information
 		body := w.Body.String()
 		suite.Contains(body, "value=\"30\"")        // Cell size from test config
-		suite.Contains(body, "value=\"#ffffff\"")   // Default cell color
+		suite.Contains(body, "value=\"#ff6600\"")   // Default cell color
 		suite.Contains(body, "PLAY")                // Initial state is paused
 		suite.Contains(body, "value=\"81.000000\"") // Speed slider value
 		suite.Contains(body, "100 ms")              // Speed label

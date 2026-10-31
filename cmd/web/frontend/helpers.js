@@ -32,7 +32,8 @@ export function showError(message) {
  *   speed: number,
  *   cellColour: number,
  *   showAge: boolean,
- *   drawGrid: boolean
+ *   drawGrid: boolean,
+ *   theme: 'light' | 'dark'
  * }>} UserPrefs
  */
 
