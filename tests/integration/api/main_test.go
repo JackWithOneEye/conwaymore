@@ -145,6 +145,11 @@ func (suite *APITestSuite) TestPlayAndSaveGameState() {
 	suite.NoError(err)
 	defer c.Close()
 
+	// The server sends the current state on connect; consume it so each
+	// following read is the response to the preceding command.
+	_, _, err = c.ReadMessage()
+	suite.Require().NoError(err)
+
 	// Send a command to add a cell at (0,0) with color #ff0000 using the binary protocol
 	setCells := protocol.SetCells{
 		Count: 1,
@@ -197,6 +202,10 @@ func (suite *APITestSuite) TestGliderPattern() {
 	suite.NoError(err)
 	defer c.Close()
 
+	// Consume the state sent on connect (see TestPlayAndSaveGameState).
+	_, _, err = c.ReadMessage()
+	suite.Require().NoError(err)
+
 	gliderCells := []protocol.Cell{
 		{X: 11, Y: 10, Colour: 0x00ff00, Age: 0},
 		{X: 12, Y: 11, Colour: 0x00ff00, Age: 0},
@@ -244,12 +253,13 @@ func (suite *APITestSuite) TestGliderPattern() {
 
 	suite.Equal(uint32(5), output.CellsCount)
 
+	// Glider after 5 generations: phase 1, shifted by (+1, +1).
 	expectedCells := []protocol.Cell{
-		{X: 11, Y: 13, Colour: 0x00ff00, Age: 3},
-		{X: 12, Y: 11, Colour: 0x00ff00, Age: 0},
-		{X: 12, Y: 13, Colour: 0x00ff00, Age: 2},
-		{X: 13, Y: 12, Colour: 0x00ff00, Age: 1},
-		{X: 13, Y: 13, Colour: 0x00ff00, Age: 0},
+		{X: 11, Y: 12, Colour: 0x00ff00, Age: 0},
+		{X: 12, Y: 13, Colour: 0x00ff00, Age: 3},
+		{X: 12, Y: 14, Colour: 0x00ff00, Age: 0},
+		{X: 13, Y: 12, Colour: 0x00ff00, Age: 2},
+		{X: 13, Y: 13, Colour: 0x00ff00, Age: 1},
 	}
 	sort.Slice(output.Cells, func(i, j int) bool {
 		a, b := output.Cells[i], output.Cells[j]

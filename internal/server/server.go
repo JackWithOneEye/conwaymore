@@ -53,6 +53,10 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// The engine emits its initial state on creation. Storing it before serving
+	// guarantees that /save has a seed and every client receives the state on connect.
+	s.lastOutput.Store(<-engine.Output())
+
 	go func() {
 		for {
 			select {
