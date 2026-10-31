@@ -10,7 +10,7 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 	<script src="assets/js/index.js"></script>
 	@templ.JSONScript("patterns", ps)
 	<div class="flex flex-col flex-1 gap-x-4 gap-y-4 overflow-auto">
-		<div class="w-full bg-slate-950 border border-gray-50 rounded-lg shadow flex-1 flex flex-col overflow-hidden">
+		<div class="w-full bg-slate-950 border border-gray-50 rounded-lg shadow-sm flex-1 flex flex-col overflow-hidden">
 			<div class="flex flex-wrap justify-between gap-2 p-2 md:gap-4">
 				// pattern menu toggle
 				@golButton("pattern-menu-toggle", "PATTERNS", false, "Toggle pattern menu")
@@ -79,14 +79,14 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 						<span></span>
 					</div>
 				</template>
-				<div class="absolute left-[-100%]">
+				<div class="absolute -left-full">
 					<div id="pattern-drag-container" class="relative bg-transparent"></div>
 				</div>
 			</div>
 			<div class="flex flex-1 p-1 overflow-hidden">
 				<div class="w-full p-1 border border-white">
 					<div id="canvas-wrapper" class="relative h-full">
-						<canvas class="data-[dragging]:cursor-grab data-[dragover]:bg-gray-400/10" width="100" height="100">
+						<canvas class="data-dragging:cursor-grab data-dragover:bg-gray-400/10" width="100" height="100">
 							get yourself a new browser
 						</canvas>
 					</div>
@@ -99,7 +99,7 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 templ golButton(id, label string, disabled bool, ariaLabel string) {
 	<button
 		id={ id }
-		class="text-sm px-2 py-1 md:px-1 border border-white active:bg-slate-800 data-[active]:bg-slate-800 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none min-h-[44px] md:min-h-[32px] touch-manipulation"
+		class="text-sm px-2 py-1 md:px-1 border border-white active:bg-slate-800 data-active:bg-slate-800 disabled:text-gray-400 disabled:border-gray-400 disabled:pointer-events-none min-h-[44px] md:min-h-[32px] touch-manipulation"
 		disabled?={ disabled }
 		aria-label={ ariaLabel }
 	>
