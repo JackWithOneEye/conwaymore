@@ -41,7 +41,6 @@ type engine struct {
 	mutex        sync.Mutex
 	output       protocol.Output
 	outputChan   chan []byte
-	encodeBuffer []byte
 }
 
 func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
@@ -49,7 +48,7 @@ func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
 	e := &engine{
 		ctx:        ctx,
 		conway:     conway.NewConway(cfg),
-		output:     protocol.Output{Cells: make([]protocol.Cell, ws/4)},
+		output:     protocol.Output{Cells: make([]protocol.Cell, 0, ws/4)},
 		outputChan: make(chan []byte, 2),
 	}
 
@@ -132,28 +131,17 @@ func (e *engine) calcNextGen() {
 
 func (e *engine) generateOutput() {
 	e.mutex.Lock()
-	cnt := e.conway.CellsCount()
-	if uint(len(e.output.Cells)) < cnt {
-		e.output.Cells = make([]protocol.Cell, cnt*2)
+	e.output.Cells = e.output.Cells[:0]
+	for c := range e.conway.Cells() {
+		e.output.Cells = append(e.output.Cells, protocol.Cell{X: c.X, Y: c.Y, Colour: c.Colour, Age: c.Age})
 	}
-	for i, cell := range e.conway.Cells() {
-		x, y, colour, age := cell.Values()
-		e.output.Cells[i].X = x
-		e.output.Cells[i].Y = y
-		e.output.Cells[i].Colour = colour
-		e.output.Cells[i].Age = age
-	}
-	e.output.CellsCount = uint32(cnt)
+	e.output.CellsCount = uint32(len(e.output.Cells))
 	e.output.Playing = e.state.Load() == playing
 	e.output.Speed = uint16(e.speed.Load())
 
-	encodeSize := e.output.EncodeSize()
-	if uint32(cap(e.encodeBuffer)) < encodeSize {
-		e.encodeBuffer = make([]byte, encodeSize)
-	}
-	e.encodeBuffer = e.encodeBuffer[:encodeSize]
-	e.output.Encode(e.encodeBuffer)
-	out := append([]byte(nil), e.encodeBuffer...)
+	// Every output gets its own buffer because it is shared with all listeners.
+	out := make([]byte, e.output.EncodeSize())
+	e.output.Encode(out)
 	e.mutex.Unlock()
 
 	select {
