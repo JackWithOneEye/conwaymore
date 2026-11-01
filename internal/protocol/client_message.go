@@ -88,7 +88,7 @@ func (sc *SetCells) decode(b []byte) error {
 
 	sc.Count = ((uint16(b[1]) << 8) & 0xff00) | uint16(b[2])
 
-	if l < int(3+sc.Count*bytesPerCell) {
+	if l < 3+int(sc.Count)*bytesPerCell {
 		return errors.New("[SetCells] byte length does not match cells count")
 	}
 
