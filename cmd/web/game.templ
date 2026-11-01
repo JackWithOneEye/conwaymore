@@ -17,11 +17,13 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 	<div class="absolute -left-full top-0">
 		<div id="pattern-drag-container" class="relative bg-transparent"></div>
 	</div>
+	// Preview that follows the finger during a touch drag of a pattern.
+	<div id="pattern-ghost" class="pointer-events-none fixed top-0 left-0 z-50 opacity-80" hidden></div>
 	// The patterns panel and the control deck share one column, so the open panel shrinks
 	// (its list scrolls) instead of running into the deck. Clicks between them reach the grid.
 	<div class="pointer-events-none absolute inset-x-3 top-16 bottom-3 z-10 flex flex-col items-start gap-5">
 		// 05 / patterns
-		<section class="hud pointer-events-auto flex min-h-0 flex-col">
+		<section id="pattern-panel" class="hud pointer-events-auto flex min-h-0 flex-col data-dragging:opacity-30">
 			<button
 				id="pattern-menu-toggle"
 				class="hud-label flex items-center justify-between gap-6 px-3 py-2 hover:text-(--accent)"

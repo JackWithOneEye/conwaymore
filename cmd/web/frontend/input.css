@@ -369,6 +369,11 @@
     gap: 8px;
     padding: 3px 4px;
     cursor: grab;
+    /* Vertical swipes scroll the list; sideways swipes and holds start a touch drag. */
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .pattern-item:hover {

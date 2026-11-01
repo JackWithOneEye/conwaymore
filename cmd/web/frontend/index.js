@@ -11,6 +11,9 @@ const MIN_ZOOM = 1;
 const LOW_ZOOM_THRESHOLD = 5;
 const SPEED_MIN = 1;
 const SPEED_MAX = 100;
+const TOUCH_DRAG_HOLD_MS = 300;
+const TOUCH_DRAG_SLOP_PX = 8;
+const TOUCH_DRAG_LIFT_PX = 56; // the touch drag preview floats above the finger so it stays visible
 const DIAL_SWEEP_DEG = 270;
 const DIAL_CENTRE = 11; // pixel at the middle of the dial's 23x23 grid
 const DIAL_RADIUS = 10;
@@ -84,6 +87,8 @@ const App = {
     patternMenuIcon: getElementByIdOrDie('pattern-menu-icon'),
     patternList: getElementByIdOrDie('pattern-list'),
     patternDragContainer: getElementByIdOrDie('pattern-drag-container'),
+    patternGhost: getElementByIdOrDie('pattern-ghost'),
+    patternPanel: getElementByIdOrDie('pattern-panel'),
 
     clear: /** @type {HTMLButtonElement} */ (getElementByIdOrDie('clear')),
     next: /** @type {HTMLButtonElement} */ (getElementByIdOrDie('next')),
@@ -200,10 +205,23 @@ const App = {
       preview.setAttribute('viewBox', `-1 -1 ${maxX + 3} ${maxY + 3}`);
       preview.firstElementChild?.setAttribute('d', d);
 
-        /** @type {HTMLDivElement} */ (patternEl).addEventListener(
+      // Mouse drags use native drag and drop; touch and pen use a pointer-driven drag,
+      // because mobile browsers do not start native drags from touch.
+      /** @type {HTMLDivElement} */ (patternEl).addEventListener(
         'dragstart',
         (e) => App.dragPattern.start(e, type)
       );
+      /** @type {HTMLDivElement} */ (patternEl).addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'mouse') {
+          App.dragPattern.touchStart(e, type, /** @type {HTMLElement} */ (patternEl));
+        }
+      });
+      // Once a touch drag has started, keep the browser from scrolling the list instead.
+      patternEl.addEventListener('touchmove', (e) => {
+        if (App.dragPattern.touch?.active) {
+          e.preventDefault();
+        }
+      }, { passive: false });
       fragment.appendChild(patternEl);
     }
     App.$.patternList.appendChild(fragment);
@@ -402,16 +420,9 @@ const App = {
     });
     App.$.canvas.addEventListener('drop', (e) => {
       const patternType = App.dragPattern.state.type;
-      if (!patternType) {
-        return;
+      if (patternType) {
+        App.dragPattern.drop(patternType, e.offsetX, e.offsetY);
       }
-      canvasWorkerMessage({
-        type: CanvasWorkerMessageType.SetPattern,
-        patternType,
-        colour: App.cellColour.state(),
-        originPx: e.offsetX,
-        originPy: e.offsetY
-      });
     });
     App.$.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
@@ -625,33 +636,7 @@ const App = {
 
         const pattern = /** @type {import('./patterns').Pattern} */ (Patterns.get(type));
         const cellSize = Math.round(Number(App.$.zoom.value));
-
-        let maxX = -Infinity, maxY = -Infinity;
-        for (const cell of pattern.cells) {
-          maxX = Math.max(maxX, cell.x);
-          maxY = Math.max(maxY, cell.y);
-        }
-        const width = (maxX + 1) * cellSize;
-        const height = (maxY + 1) * cellSize;
-        App.$.patternDragContainer.style.cssText = `width: ${width}px; height: ${height}px;`;
-
-        const fragment = document.createDocumentFragment();
-        for (const cell of pattern.cells) {
-          const cellDiv = document.createElement('div');
-          const x = cell.x * cellSize;
-          const y = cell.y * cellSize;
-
-          cellDiv.style.cssText = `
-            position: absolute;
-            left: ${x}px;
-            top: ${y}px;
-            width: ${cellSize}px;
-            height: ${cellSize}px;
-            background-color: ${App.$.cellColour.value};
-          `;
-          fragment.appendChild(cellDiv);
-        }
-        App.$.patternDragContainer.appendChild(fragment);
+        App.dragPattern.renderCells(App.$.patternDragContainer, pattern, cellSize);
 
         event.dataTransfer.setDragImage(
           App.$.patternDragContainer,
@@ -665,6 +650,144 @@ const App = {
       App.dragPattern.state.type = type;
       document.body.style.userSelect = 'none';
       document.addEventListener('drop', App.dragPattern.end)
+    },
+    /**
+     * Draw a pattern's cells into a container at the grid's current cell size and colour
+     * @param {HTMLElement} container
+     * @param {import('./patterns').Pattern} pattern
+     * @param {number} cellSize
+     */
+    renderCells(container, pattern, cellSize) {
+      let maxX = -Infinity, maxY = -Infinity;
+      for (const cell of pattern.cells) {
+        maxX = Math.max(maxX, cell.x);
+        maxY = Math.max(maxY, cell.y);
+      }
+      container.style.width = `${(maxX + 1) * cellSize}px`;
+      container.style.height = `${(maxY + 1) * cellSize}px`;
+
+      const fragment = document.createDocumentFragment();
+      for (const cell of pattern.cells) {
+        const cellDiv = document.createElement('div');
+        cellDiv.style.cssText = `
+          position: absolute;
+          left: ${cell.x * cellSize}px;
+          top: ${cell.y * cellSize}px;
+          width: ${cellSize}px;
+          height: ${cellSize}px;
+          background-color: ${App.$.cellColour.value};
+        `;
+        fragment.appendChild(cellDiv);
+      }
+      container.replaceChildren(fragment);
+    },
+    /**
+     * Place a pattern centred on a canvas pixel
+     * @param {string} patternType
+     * @param {number} originPx
+     * @param {number} originPy
+     */
+    drop(patternType, originPx, originPy) {
+      canvasWorkerMessage({
+        type: CanvasWorkerMessageType.SetPattern,
+        patternType,
+        colour: App.cellColour.state(),
+        originPx,
+        originPy
+      });
+    },
+    /** @type {{ active: boolean } | null} */
+    touch: null,
+    /**
+     * Track a touch or pen press on a pattern. It becomes a drag after a sideways move or a
+     * short hold; a vertical move is left to the browser so the list still scrolls.
+     * @param {PointerEvent} down
+     * @param {string} type
+     * @param {HTMLElement} item
+     */
+    touchStart(down, type, item) {
+      const pattern = /** @type {import('./patterns').Pattern} */ (Patterns.get(type));
+      const ghost = App.$.patternGhost;
+      const gesture = { active: false };
+      let x = down.clientX, y = down.clientY, cellSize = 0;
+      App.dragPattern.touch = gesture;
+      item.draggable = false; // no native long-press drag on top of this one
+
+      // The pattern is centred on the preview, which floats above the finger.
+      const dropPoint = () => ({ x, y: y - TOUCH_DRAG_LIFT_PX });
+      const overCanvas = (/** @type {{x: number, y: number}} */ p) =>
+        document.elementsFromPoint(p.x, p.y).find((el) => !App.$.patternPanel.contains(el)) === App.$.canvas;
+      const follow = () => {
+        const p = dropPoint();
+        ghost.style.translate = `${p.x - pattern.center_x * cellSize}px ${p.y - pattern.center_y * cellSize}px`;
+        App.dragPattern.state.canvasDragOver = overCanvas(p);
+      };
+      const activate = () => {
+        if (gesture.active) {
+          return;
+        }
+        gesture.active = true;
+        cellSize = Math.round(Number(App.$.zoom.value));
+        App.dragPattern.renderCells(ghost, pattern, cellSize);
+        ghost.hidden = false;
+        App.$.patternPanel.dataset.dragging = '';
+        App.dragPattern.state.type = type;
+        follow();
+      };
+      const timer = setTimeout(activate, TOUCH_DRAG_HOLD_MS);
+
+      const onMove = (/** @type {PointerEvent} */ e) => {
+        if (e.pointerId !== down.pointerId) {
+          return;
+        }
+        x = e.clientX;
+        y = e.clientY;
+        if (gesture.active) {
+          follow();
+          return;
+        }
+        const dx = x - down.clientX, dy = y - down.clientY;
+        if (Math.hypot(dx, dy) > TOUCH_DRAG_SLOP_PX) {
+          if (Math.abs(dx) > Math.abs(dy)) {
+            activate();
+          } else {
+            finish();
+          }
+        }
+      };
+      const onUp = (/** @type {PointerEvent} */ e) => {
+        if (e.pointerId !== down.pointerId) {
+          return;
+        }
+        const p = dropPoint();
+        if (gesture.active && overCanvas(p)) {
+          const rect = App.$.canvas.getBoundingClientRect();
+          App.dragPattern.drop(type, Math.round(p.x - rect.left), Math.round(p.y - rect.top));
+        }
+        finish();
+      };
+      const onCancel = (/** @type {PointerEvent} */ e) => {
+        if (e.pointerId === down.pointerId) {
+          finish();
+        }
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        item.removeEventListener('pointermove', onMove);
+        item.removeEventListener('pointerup', onUp);
+        item.removeEventListener('pointercancel', onCancel);
+        item.draggable = true;
+        ghost.hidden = true;
+        ghost.replaceChildren();
+        delete App.$.patternPanel.dataset.dragging;
+        if (gesture.active) {
+          App.dragPattern.end();
+        }
+        App.dragPattern.touch = null;
+      };
+      item.addEventListener('pointermove', onMove);
+      item.addEventListener('pointerup', onUp);
+      item.addEventListener('pointercancel', onCancel);
     },
     /**
      * Clean up pattern drag state and event listeners
