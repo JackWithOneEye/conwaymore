@@ -85,6 +85,19 @@ func sendCells(conn *websocket.Conn, cells []protocol.Cell) tea.Cmd {
 	}
 }
 
+// sendAck confirms receipt of a server message so the server keeps at most a
+// couple of frames in flight for this client.
+func sendAck(conn *websocket.Conn) tea.Cmd {
+	return func() tea.Msg {
+		msg := &protocol.FrameAck{}
+		err := conn.Write(context.Background(), websocket.MessageBinary, msg.Encode())
+		if err != nil {
+			log.Printf("Error sending frame ack: %v", err)
+		}
+		return nil
+	}
+}
+
 func sendSpeed(conn *websocket.Conn, speed uint16) tea.Cmd {
 	return func() tea.Msg {
 		msg := &protocol.SetSpeed{Speed: speed}

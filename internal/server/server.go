@@ -15,6 +15,7 @@ import (
 	"github.com/JackWithOneEye/conwaymore/internal/engine"
 	"github.com/JackWithOneEye/conwaymore/internal/livereload"
 	"github.com/JackWithOneEye/conwaymore/internal/patterns"
+	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	"github.com/a-h/templ"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,11 @@ type ServerConfig interface {
 	Port() uint
 	WorldSize() uint
 }
+
+// maxInFlight caps how many messages per client may be written but not yet
+// acknowledged. Clients ack every received message, so a slow client falls
+// behind by at most maxInFlight frames plus one pending slot.
+const maxInFlight = 2
 
 type server struct {
 	cfg          ServerConfig
@@ -35,7 +41,32 @@ type server struct {
 }
 
 type listener struct {
-	msgs chan []byte
+	msgs chan []byte // capacity 1: the pending message, replaced by newer ones
+
+	mu       sync.Mutex
+	inFlight int // messages written to the client but not yet acked
+}
+
+// offer hands the newest broadcast message to the listener. While delivery is
+// still in progress the pending message is replaced (never queued): full frames
+// supersede whatever is pending, and state updates are folded into a pending
+// frame's header so neither cells nor the new state are lost.
+//
+// Called only by the hub goroutine while holding listenersMtx, whose pump only
+// ever receives: after the non-blocking drain the channel is empty, so the
+// final send can never block. Do not add a second sender without upholding
+// that invariant — a blocking send here deadlocks the hub for every client.
+func (l *listener) offer(o []byte) {
+	var pending []byte
+	select {
+	case pending = <-l.msgs:
+	default:
+	}
+
+	if pending != nil && protocol.IsStateUpdate(o) && !protocol.IsStateUpdate(pending) {
+		o = protocol.ApplyStateUpdate(pending, o)
+	}
+	l.msgs <- o
 }
 
 func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engine, ctx context.Context) *http.Server {
@@ -66,17 +97,18 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 				if !ok {
 					continue
 				}
-				s.lastOutput.Store(o)
+				if protocol.IsStateUpdate(o) {
+					// Keep the cached seed current without storing a cell-less update.
+					if lo := s.lastOutput.Load(); lo != nil {
+						s.lastOutput.Store(protocol.ApplyStateUpdate(lo.([]byte), o))
+					}
+				} else {
+					s.lastOutput.Store(o)
+				}
 
 				s.listenersMtx.RLock()
 				for l := range s.listeners {
-					select {
-					case l.msgs <- o:
-					default:
-						<-l.msgs
-						l.msgs <- o
-						log.Println("TOO SLOW!!!")
-					}
+					l.offer(o)
 				}
 				s.listenersMtx.RUnlock()
 			}
@@ -163,7 +195,7 @@ func (s *server) registerRoutes() http.Handler {
 }
 
 func (s *server) playHandler(c *gin.Context) {
-	l := &listener{msgs: make(chan []byte, 4)}
+	l := &listener{msgs: make(chan []byte, 1)}
 	s.addListener(l)
 	defer func() {
 		s.removeListener(l)
@@ -223,10 +255,22 @@ func (s *server) playHandler(c *gin.Context) {
 	}()
 
 	for {
+		// Stop writing once maxInFlight messages await acknowledgement; the
+		// client drains the backlog by acking, and always receives the newest
+		// pending message rather than a queue of stale ones.
+		l.mu.Lock()
+		sendable := l.inFlight < maxInFlight
+		l.mu.Unlock()
+
+		var outbox chan []byte
+		if sendable {
+			outbox = l.msgs
+		}
+
 		select {
 		case <-wsCtx.Done():
 			return
-		case payload := <-l.msgs:
+		case payload := <-outbox:
 			err := socket.Write(wsCtx, websocket.MessageBinary, payload)
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 				return
@@ -235,7 +279,18 @@ func (s *server) playHandler(c *gin.Context) {
 				log.Printf("could not write to websocket: %s", err)
 				return
 			}
+			l.mu.Lock()
+			l.inFlight++
+			l.mu.Unlock()
 		case msg := <-readerMsgChan:
+			if protocol.IsFrameAck(msg) {
+				l.mu.Lock()
+				if l.inFlight > 0 {
+					l.inFlight--
+				}
+				l.mu.Unlock()
+				continue
+			}
 			err = s.engine.SubmitMessage(msg)
 			if err != nil {
 				log.Printf("websocket command produced an error: %s", err)

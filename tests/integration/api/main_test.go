@@ -29,6 +29,11 @@ type APITestSuite struct {
 	cancel context.CancelFunc
 }
 
+// ackFrame confirms receipt of a server message, as every real client does.
+func ackFrame(c *websocket.Conn) error {
+	return c.WriteMessage(websocket.BinaryMessage, (&protocol.FrameAck{}).Encode())
+}
+
 // testDatabaseConfig implements DatabaseConfig for integration tests
 type testDatabaseConfig struct {
 	dbUrl string
@@ -130,6 +135,7 @@ func (suite *APITestSuite) TestPlayWebSocket() {
 	_, msg, err := c.ReadMessage()
 	suite.NoError(err)
 	suite.NotEmpty(msg)
+	suite.NoError(ackFrame(c))
 }
 
 func (suite *APITestSuite) TestPlayAndSaveGameState() {
@@ -149,6 +155,7 @@ func (suite *APITestSuite) TestPlayAndSaveGameState() {
 	// following read is the response to the preceding command.
 	_, _, err = c.ReadMessage()
 	suite.Require().NoError(err)
+	suite.Require().NoError(ackFrame(c))
 
 	// Send a command to add a cell at (0,0) with color #ff0000 using the binary protocol
 	setCells := protocol.SetCells{
@@ -162,6 +169,7 @@ func (suite *APITestSuite) TestPlayAndSaveGameState() {
 	// Wait for the engine to process the SetCells command
 	_, msg, err := c.ReadMessage()
 	suite.NoError(err)
+	suite.Require().NoError(ackFrame(c))
 	var decodedOutput protocol.Output
 	err = decodedOutput.Decode(msg)
 	suite.NoError(err)
@@ -205,6 +213,7 @@ func (suite *APITestSuite) TestGliderPattern() {
 	// Consume the state sent on connect (see TestPlayAndSaveGameState).
 	_, _, err = c.ReadMessage()
 	suite.Require().NoError(err)
+	suite.Require().NoError(ackFrame(c))
 
 	gliderCells := []protocol.Cell{
 		{X: 11, Y: 10, Colour: 0x00ff00, Age: 0},
@@ -223,6 +232,7 @@ func (suite *APITestSuite) TestGliderPattern() {
 
 	_, msg, err := c.ReadMessage()
 	suite.NoError(err)
+	suite.Require().NoError(ackFrame(c))
 	var decodedOutput protocol.Output
 	err = decodedOutput.Decode(msg)
 	suite.NoError(err)
@@ -233,6 +243,7 @@ func (suite *APITestSuite) TestGliderPattern() {
 		suite.NoError(err)
 		_, msg, err = c.ReadMessage()
 		suite.NoError(err)
+		suite.Require().NoError(ackFrame(c))
 		err = decodedOutput.Decode(msg)
 		suite.NoError(err)
 	}

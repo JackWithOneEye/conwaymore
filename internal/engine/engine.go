@@ -114,13 +114,22 @@ func (e *engine) SubmitMessage(b []byte) error {
 		err = e.handleSetCells(t)
 	case *protocol.SetSpeed:
 		err = e.handleSetSpeed(t)
+	case *protocol.FrameAck:
+		// Acks are handled by the server; ignore one should it arrive here.
+		return nil
 	}
 
 	if err != nil {
 		return fmt.Errorf("handle command error: %w", err)
 	}
 
-	e.generateOutput()
+	// A speed change does not alter any cell, so a lightweight state update is
+	// enough; every other successful command can change cells and needs a frame.
+	if _, ok := msg.(*protocol.SetSpeed); ok {
+		e.generateStateUpdate()
+	} else {
+		e.generateOutput()
+	}
 
 	return nil
 }
@@ -151,6 +160,23 @@ func (e *engine) generateOutput() {
 	case e.outputChan <- out:
 	default:
 		log.Println("NOPE")
+	}
+}
+
+// generateStateUpdate broadcasts only the play state and speed, for changes
+// that leave every cell untouched.
+func (e *engine) generateStateUpdate() {
+	su := &protocol.StateUpdate{
+		Playing: e.state.Load() == playing,
+		Speed:   uint16(e.speed.Load()),
+	}
+
+	// Unlike a full frame, a state update must not be dropped: in a paused game
+	// no later message would ever deliver the new state. The hub drains the
+	// channel immediately, so this never blocks for long.
+	select {
+	case e.outputChan <- su.Encode():
+	case <-e.ctx.Done():
 	}
 }
 

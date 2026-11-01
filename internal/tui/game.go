@@ -266,14 +266,23 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Cache the latest data instead of processing immediately
 		m.pendingData = msg.Data
 
-		// Continue listening for messages
+		// Continue listening for messages and confirm receipt of this one
 		if m.isConnected() {
-			return m, listenForMessages(m.conn)
+			return m, tea.Batch(listenForMessages(m.conn), sendAck(m.conn))
 		}
 	case tickMsg:
 		// Process pending data at 30 FPS
 		if m.pendingData != nil {
-			if err := m.output.Decode(m.pendingData); err != nil {
+			if protocol.IsStateUpdate(m.pendingData) {
+				su, err := protocol.DecodeStateUpdate(m.pendingData)
+				if err != nil {
+					m.err = fmt.Errorf("failed to decode state update: %w", err)
+				} else {
+					m.running = su.Playing
+					m.speed.Store(uint32(su.Speed))
+					m.lastUpdate = time.Now()
+				}
+			} else if err := m.output.Decode(m.pendingData); err != nil {
 				m.err = fmt.Errorf("failed to decode server message: %w", err)
 				m.cells = nil // the failed decode may have partially overwritten them
 			} else {

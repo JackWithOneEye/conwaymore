@@ -11,6 +11,7 @@ const MIN_ZOOM = 1;
 const LOW_ZOOM_THRESHOLD = 5;
 const SPEED_MIN = 1;
 const SPEED_MAX = 100;
+const SPEED_SEND_DEBOUNCE_MS = 80;
 const TOUCH_DRAG_HOLD_MS = 300;
 const TOUCH_DRAG_SLOP_PX = 8;
 const TOUCH_DRAG_LIFT_PX = 56; // the touch drag preview floats above the finger so it stays visible
@@ -323,7 +324,7 @@ const App = {
       App.$.speed.setAttribute('aria-valuetext', `Speed ${speed.toFixed(0)} milliseconds`);
       App.speed.renderDial();
       UserPreferences.save({ speed });
-      canvasWorkerMessage({ type: CanvasWorkerMessageType.SetSpeed, speed });
+      App.speed.scheduleSend(speed);
     });
 
     // The dial drives the visually hidden range input, which keeps keyboard and screen reader support.
@@ -966,6 +967,19 @@ const App = {
      */
     convertSpeed(attrValue) {
       return Math.max(1, 1000 - Math.sqrt(Number(attrValue)) * 100);
+    },
+    /** @type {number | undefined} */
+    sendTimeout: undefined,
+    /**
+     * Debounce speed updates while the slider is being dragged: only the latest
+     * value is sent once the slider rests for SPEED_SEND_DEBOUNCE_MS.
+     * @param {number} speed - The delay in milliseconds (1-1000)
+     */
+    scheduleSend(speed) {
+      clearTimeout(App.speed.sendTimeout);
+      App.speed.sendTimeout = setTimeout(() => {
+        canvasWorkerMessage({ type: CanvasWorkerMessageType.SetSpeed, speed });
+      }, SPEED_SEND_DEBOUNCE_MS);
     }
   }
 };

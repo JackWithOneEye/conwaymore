@@ -78,6 +78,22 @@ func main() {
 	global.Call("addEventListener", "message", onMessageFunc)
 	global.Call("postMessage", map[string]any{"type": "ready"})
 
+	postState := func(playing bool, speed uint16) {
+		global.Call(
+			"postMessage",
+			[]any{
+				map[string]any{
+					"type":    1,
+					"playing": playing,
+				},
+				map[string]any{
+					"type":  2,
+					"speed": speed,
+				},
+			},
+		)
+	}
+
 	// o is reused so that decoding overwrites the cells from the previous message instead of
 	// allocating new ones. cellsCache aliases o.Cells, which is safe because draw runs on this
 	// single-threaded runtime and never in the middle of Decode.
@@ -87,26 +103,26 @@ func main() {
 		if err != nil {
 			log.Fatalf("could not read from websocket: %s", err)
 		}
-		err = o.Decode(b)
-		if err != nil {
-			log.Fatalf("could not decode data: %s", err)
+		if protocol.IsStateUpdate(b) {
+			su, err := protocol.DecodeStateUpdate(b)
+			if err != nil {
+				log.Fatalf("could not decode state update: %s", err)
+			}
+			postState(su.Playing, su.Speed)
+		} else {
+			err = o.Decode(b)
+			if err != nil {
+				log.Fatalf("could not decode data: %s", err)
+			}
+			postState(o.Playing, o.Speed)
+			cellsCache = o.Cells
+			draw()
 		}
 
-		global.Call(
-			"postMessage",
-			[]any{
-				map[string]any{
-					"type":    1,
-					"playing": o.Playing,
-				},
-				map[string]any{
-					"type":  2,
-					"speed": o.Speed,
-				},
-			},
-		)
-		cellsCache = o.Cells
-		draw()
+		// Confirm receipt so the server keeps at most a couple of frames in flight.
+		if err := sendClientMessage(&protocol.FrameAck{}); err != nil {
+			log.Fatalf("could not ack frame: %s", err)
+		}
 	}
 }
 

@@ -11,6 +11,7 @@ const (
 	command clientMessageType = iota
 	setCells
 	setSpeed
+	frameAck
 )
 
 type ClientMessage interface {
@@ -27,6 +28,8 @@ func DecodeClientMessage(b []byte) (ClientMessage, error) {
 		msg = &SetCells{}
 	case byte(setSpeed):
 		msg = &SetSpeed{}
+	case byte(frameAck):
+		msg = &FrameAck{}
 	default:
 		return nil, fmt.Errorf("unknown client message type: %d", b[0])
 	}
@@ -95,6 +98,27 @@ func (sc *SetCells) decode(b []byte) error {
 	sc.Cells = make([]Cell, sc.Count)
 	decodeCells(b[3:], sc.Cells)
 	return nil
+}
+
+// FrameAck confirms receipt of a single server message. Clients send one ack
+// per received message so the server can keep at most a couple of frames in
+// flight per client instead of queueing frames that may be stale on arrival.
+type FrameAck struct{}
+
+func (f *FrameAck) Encode() []byte {
+	return []byte{byte(frameAck)}
+}
+
+func (f *FrameAck) decode(b []byte) error {
+	if len(b) != 1 {
+		return errors.New("[FrameAck] too long")
+	}
+	return nil
+}
+
+// IsFrameAck reports whether b is a frame acknowledgement.
+func IsFrameAck(b []byte) bool {
+	return len(b) == 1 && b[0] == byte(frameAck)
 }
 
 type SetSpeed struct {
