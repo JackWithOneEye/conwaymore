@@ -29,6 +29,21 @@ const (
 
 type drawMode uint
 
+// heatMaxAge is the age from which cells get the last heat colour.
+const heatMaxAge = 255
+
+// heatColours maps a cell's age to its colour in age mode, on a log scale: newborn yellow,
+// then orange, magenta and purple, to indigo at heatMaxAge generations and older.
+var heatColours = func() (table [heatMaxAge + 1]uint32) {
+	stops := [...]uint32{0xffd000, 0xff6a00, 0xe0218a, 0x7b3fe4, 0x3949ab}
+	for age := range table {
+		pos := math.Log2(1+float64(age)) / math.Log2(heatMaxAge+1) * float64(len(stops)-1)
+		i := min(int(pos), len(stops)-2)
+		table[age] = mixColour(stops[i], stops[i+1], pos-float64(i))
+	}
+	return
+}()
+
 const (
 	drawColour drawMode = iota
 	drawAge
@@ -325,9 +340,13 @@ func (cd *canvasDrawer) drawCellToBuffer(cell *protocol.Cell) {
 		yPositions = append(yPositions, yPosition{pxStartY, cd.cellSize})
 	}
 
-	r := (cell.Colour >> 16) & 0xff
-	g := (cell.Colour >> 8) & 0xff
-	b := cell.Colour & 0xff
+	colour := cell.Colour
+	if cd.drawMode == drawAge {
+		colour = heatColours[min(cell.Age, heatMaxAge)]
+	}
+	r := (colour >> 16) & 0xff
+	g := (colour >> 8) & 0xff
+	b := colour & 0xff
 
 	// Draw all combinations of X and Y positions
 	for _, xPos := range xPositions {

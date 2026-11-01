@@ -38,3 +38,14 @@ func absInt(v int) (int, int) {
 	}
 	return 1, v
 }
+
+// mixColour blends two 0xRRGGBB colours, from a at t = 0 to b at t = 1.
+func mixColour(a, b uint32, t float64) uint32 {
+	var out uint32
+	for shift := 16; shift >= 0; shift -= 8 {
+		ca := float64((a >> shift) & 0xff)
+		cb := float64((b >> shift) & 0xff)
+		out |= uint32(math.Round(ca+(cb-ca)*t)) << shift
+	}
+	return out
+}
