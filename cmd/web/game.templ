@@ -14,7 +14,8 @@ templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps
 			get yourself a new browser
 		</canvas>
 	</div>
-	<div class="absolute -left-full top-0">
+	// Off-screen source for the native drag image. Fixed, so main's overflow clip doesn't blank it.
+	<div class="fixed -left-full top-0">
 		<div id="pattern-drag-container" class="relative bg-transparent"></div>
 	</div>
 	// Preview that follows the finger during a touch drag of a pattern.
