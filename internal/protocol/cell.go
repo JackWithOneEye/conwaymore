@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/binary"
+
 const bytesPerCell = 9
 
 type Cell struct {
@@ -7,60 +9,25 @@ type Cell struct {
 	Colour    uint32
 }
 
-func encodeCells(src []Cell, cellsCount uint32, dest []byte, destOffset uint) {
-	dsti := destOffset
-	for i := range cellsCount {
-		cell := src[i]
-
-		dest[dsti] = byte((cell.X >> 8) & 0xff)
-		dsti += 1
-		dest[dsti] = byte(cell.X & 0xff)
-		dsti += 1
-
-		dest[dsti] = byte((cell.Y >> 8) & 0xff)
-		dsti += 1
-		dest[dsti] = byte(cell.Y & 0xff)
-		dsti += 1
-
-		dest[dsti] = byte((cell.Colour >> 16) & 0xff)
-		dsti += 1
-		dest[dsti] = byte((cell.Colour >> 8) & 0xff)
-		dsti += 1
-		dest[dsti] = byte(cell.Colour & 0xff)
-		dsti += 1
-
-		dest[dsti] = byte((cell.Age >> 8) & 0xff)
-		dsti += 1
-		dest[dsti] = byte(cell.Age & 0xff)
-		dsti += 1
+// encodeCells writes cells in the fixed 9 bytes per cell format: x, y, colour (3 bytes), age.
+func encodeCells(src []Cell, dest []byte) {
+	for i, cell := range src {
+		d := dest[i*bytesPerCell : (i+1)*bytesPerCell]
+		binary.BigEndian.PutUint16(d[0:], cell.X)
+		binary.BigEndian.PutUint16(d[2:], cell.Y)
+		d[4], d[5], d[6] = byte(cell.Colour>>16), byte(cell.Colour>>8), byte(cell.Colour)
+		binary.BigEndian.PutUint16(d[7:], cell.Age)
 	}
 }
 
-func decodeCells(src []byte, dest []Cell, srcOffset uint) {
-	srci := srcOffset
+func decodeCells(src []byte, dest []Cell) {
 	for i := range dest {
-		x := (uint16(src[srci]) << 8) & 0xff00
-		srci += 1
-		x = x | uint16(src[srci])
-		srci += 1
-
-		y := (uint16(src[srci]) << 8) & 0xff00
-		srci += 1
-		y = y | uint16(src[srci])
-		srci += 1
-
-		c := (uint32(src[srci]) << 16) & 0xff0000
-		srci += 1
-		c = c | ((uint32(src[srci]) << 8) & 0xff00)
-		srci += 1
-		c = c | uint32(src[srci])
-		srci += 1
-
-		a := (uint16(src[srci]) << 8) & 0xff00
-		srci += 1
-		a = a | uint16(src[srci])
-		srci += 1
-
-		dest[i] = Cell{X: x, Y: y, Colour: c, Age: a}
+		s := src[i*bytesPerCell : (i+1)*bytesPerCell]
+		dest[i] = Cell{
+			X:      binary.BigEndian.Uint16(s[0:]),
+			Y:      binary.BigEndian.Uint16(s[2:]),
+			Colour: uint32(s[4])<<16 | uint32(s[5])<<8 | uint32(s[6]),
+			Age:    binary.BigEndian.Uint16(s[7:]),
+		}
 	}
 }

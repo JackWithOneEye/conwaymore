@@ -76,7 +76,7 @@ func (sc *SetCells) Encode() []byte {
 	b[0] = byte(setCells)
 	b[1] = byte((sc.Count >> 8) & 0xff)
 	b[2] = byte(sc.Count & 0xff)
-	encodeCells(sc.Cells, uint32(sc.Count), b, 3)
+	encodeCells(sc.Cells[:sc.Count], b[3:])
 	return b
 }
 
@@ -93,7 +93,7 @@ func (sc *SetCells) decode(b []byte) error {
 	}
 
 	sc.Cells = make([]Cell, sc.Count)
-	decodeCells(b, sc.Cells, 3)
+	decodeCells(b[3:], sc.Cells)
 	return nil
 }
 

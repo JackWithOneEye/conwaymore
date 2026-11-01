@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ type engine struct {
 	mutex        sync.Mutex
 	output       protocol.Output
 	outputChan   chan []byte
+	encodeBuffer []byte
 }
 
 func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
@@ -139,9 +141,10 @@ func (e *engine) generateOutput() {
 	e.output.Playing = e.state.Load() == playing
 	e.output.Speed = uint16(e.speed.Load())
 
-	// Every output gets its own buffer because it is shared with all listeners.
-	out := make([]byte, e.output.EncodeSize())
-	e.output.Encode(out)
+	// The encoded size is only known after encoding, so encode into a reused buffer.
+	// Every output gets its own exact-size copy because it is shared with all listeners.
+	e.encodeBuffer = e.output.Encode(e.encodeBuffer[:0])
+	out := bytes.Clone(e.encodeBuffer)
 	e.mutex.Unlock()
 
 	select {
