@@ -109,16 +109,6 @@ func saveGame(host string) tea.Cmd {
 	}
 }
 
-func processServerMessage(data []byte) ([]protocol.Cell, bool, uint16, error) {
-	var output protocol.Output
-	err := output.Decode(data)
-	if err != nil {
-		return nil, false, 0, fmt.Errorf("failed to decode server message: %w", err)
-	}
-
-	return output.Cells, output.Playing, output.Speed, nil
-}
-
 func getWorldSize(host string) (uint, error) {
 	u := url.URL{Scheme: "http", Host: host, Path: "/globals"}
 	resp, err := http.DefaultClient.Get(u.String())

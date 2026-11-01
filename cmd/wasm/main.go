@@ -78,8 +78,11 @@ func main() {
 	global.Call("addEventListener", "message", onMessageFunc)
 	global.Call("postMessage", map[string]any{"type": "ready"})
 
+	// o is reused so that decoding overwrites the cells from the previous message instead of
+	// allocating new ones. cellsCache aliases o.Cells, which is safe because draw runs on this
+	// single-threaded runtime and never in the middle of Decode.
+	var o protocol.Output
 	for {
-		var o protocol.Output
 		_, b, err := conn.Read(ctx)
 		if err != nil {
 			log.Fatalf("could not read from websocket: %s", err)

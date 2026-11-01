@@ -49,7 +49,8 @@ type gameModel struct {
 	patternCanPlace bool              // true if pattern can be placed at current position
 
 	// Performance optimizations
-	pendingData    []byte // latest WebSocket message data, processed on tick
+	pendingData    []byte          // latest WebSocket message data, processed on tick
+	output         protocol.Output // reused so decoding overwrites cells instead of allocating; cells aliases output.Cells
 	lastUpdate     time.Time
 	currentCells   map[uint64]uint32         // reused across frames to avoid allocation
 	prevCells      map[uint64]uint32         // cache of previous frame's cells for diff rendering (key: x<<32|y)
@@ -272,13 +273,13 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		// Process pending data at 30 FPS
 		if m.pendingData != nil {
-			cells, playing, speed, err := processServerMessage(m.pendingData)
-			if err != nil {
-				m.err = err
+			if err := m.output.Decode(m.pendingData); err != nil {
+				m.err = fmt.Errorf("failed to decode server message: %w", err)
+				m.cells = nil // the failed decode may have partially overwritten them
 			} else {
-				m.cells = cells
-				m.running = playing
-				m.speed.Store(uint32(speed))
+				m.cells = m.output.Cells
+				m.running = m.output.Playing
+				m.speed.Store(uint32(m.output.Speed))
 				m.updateGrid()
 				m.lastUpdate = time.Now()
 			}
