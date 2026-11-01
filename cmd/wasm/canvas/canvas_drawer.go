@@ -62,20 +62,27 @@ type canvasDrawer struct {
 	xOffset float64
 	yOffset float64
 
-	xBoundary coordBoundary
-	yBoundary coordBoundary
 	worldSize int
 
 	drawMode drawMode
 	grid     bool
 
 	backgroundColour uint32
+	backgroundStyle  string // backgroundColour as a CSS colour
 	gridColour       string
 
-	// ImageData batch rendering
-	imageData    js.Value
-	pixelCount   int
-	byteBuffer   []byte // Reusable buffer for uint32->byte conversion
+	// Cell-resolution rendering: one pixel per visible cell goes into a small
+	// ImageData, which the browser then scales up with drawImage and
+	// imageSmoothingEnabled = false. At 30x zoom the buffer is ~900x smaller
+	// than a screen-sized one, and the 8 MB CopyBytesToJS + putImageData per
+	// frame shrink to a few KB.
+	bufCanvas js.Value // small OffscreenCanvas, bufCols x bufRows
+	bufCtx    js.Value
+	imageData js.Value
+	byteBuffer []byte
+	bufCols    int
+	bufRows    int
+
 	canvasWidth  int
 	canvasHeight int
 
@@ -94,14 +101,13 @@ func NewCanvasDrawer(canvas js.Value, axisLength, cellSize, height, width int) C
 		ctx:         ctx,
 		wrapMask:    uint16(axisLength) - 1,
 
-		xBoundary: coordBoundary{within: true},
-		yBoundary: coordBoundary{within: true},
 		worldSize: cellSize * axisLength,
 
 		drawMode: drawColour,
 		grid:     true,
 
 		backgroundColour: 0xf2f2f2,
+		backgroundStyle:  "#f2f2f2",
 		gridColour:       "#d6d6d6",
 
 		colorCache: lrucache.NewLruCache[uint32, string](256),
@@ -113,13 +119,7 @@ func NewCanvasDrawer(canvas js.Value, axisLength, cellSize, height, width int) C
 }
 
 func (cd *canvasDrawer) Draw(cells []protocol.Cell) {
-	// start := time.Now()
-	// defer func() {
-	// 	dur := time.Since(start).Microseconds()
-	// 	log.Printf("??? %d", dur)
-	// }()
-
-	// Reset the pixel buffer to the background colour to prevent ghost cells
+	// Reset the cell-resolution buffer to the background colour to prevent ghost cells
 	r := byte(cd.backgroundColour >> 16)
 	g := byte(cd.backgroundColour >> 8)
 	b := byte(cd.backgroundColour)
@@ -130,20 +130,50 @@ func (cd *canvasDrawer) Draw(cells []protocol.Cell) {
 		cd.byteBuffer[i+3] = 0xff
 	}
 
-	// Batch draw cells to pixel buffer
+	// Truncate the offsets to whole pixels like the previous per-pixel renderer
+	// did, so the scaled-up result is identical to it. Column j of the buffer
+	// holds the cell at (j - 1 - qx) mod axisLength, drawn at screen x
+	// j*cellSize + destX; the -1 column covers the partially visible cell at
+	// the left/top edge (destX, destY <= 0).
+	xOff := int(cd.xOffset)
+	yOff := int(cd.yOffset)
+	qx := floorDiv(xOff, cd.cellSize)
+	qy := floorDiv(yOff, cd.cellSize)
+	destX := xOff - (qx+1)*cd.cellSize
+	destY := yOff - (qy+1)*cd.cellSize
+
+	cols := min((cd.canvasWidth-destX+cd.cellSize-1)/cd.cellSize, cd.bufCols, int(cd.axisLength))
+	rows := min((cd.canvasHeight-destY+cd.cellSize-1)/cd.cellSize, cd.bufRows, int(cd.axisLength))
+
+	// Plot one pixel per visible cell; the modular index handles the toroidal
+	// wrap-around and only viewport cells land inside [0, cols) x [0, rows).
 	for i := range cells {
-		c := cells[i]
-		if cd.coordIsVisible(c.X, c.Y) {
-			cd.drawCellToBuffer(&c)
+		c := &cells[i]
+		j := (int(c.X) + 1 + qx) & int(cd.wrapMask)
+		k := (int(c.Y) + 1 + qy) & int(cd.wrapMask)
+		if j >= cols || k >= rows {
+			continue
 		}
+		colour := c.Colour
+		if cd.drawMode == drawAge {
+			colour = heatColours[min(c.Age, heatMaxAge)]
+		}
+		idx := (k*cd.bufCols + j) * 4
+		cd.byteBuffer[idx] = byte(colour >> 16)
+		cd.byteBuffer[idx+1] = byte(colour >> 8)
+		cd.byteBuffer[idx+2] = byte(colour)
 	}
 
-	// Copy pixel buffer to ImageData and draw to canvas
-	data := cd.imageData.Get("data")
-	js.CopyBytesToJS(data, cd.byteBuffer)
-	cd.ctx.Call("putImageData", cd.imageData, 0, 0)
+	js.CopyBytesToJS(cd.imageData.Get("data"), cd.byteBuffer)
+	cd.bufCtx.Call("putImageData", cd.imageData, 0, 0)
 
-	// Draw grid after ImageData (so it appears on top)
+	// Clear the canvas, then let the browser scale the cell pixels up.
+	cd.ctx.Set("fillStyle", cd.backgroundStyle)
+	cd.ctx.Call("fillRect", 0, 0, cd.canvasWidth, cd.canvasHeight)
+	cd.ctx.Set("imageSmoothingEnabled", false)
+	cd.ctx.Call("drawImage", cd.bufCanvas, 0, 0, cols, rows, destX, destY, cols*cd.cellSize, rows*cd.cellSize)
+
+	// Draw grid after the cells (so it appears on top)
 	showGrid := cd.grid && cd.cellSize >= gridMinPx
 	if showGrid {
 		cd.ctx.Call("beginPath")
@@ -173,8 +203,6 @@ func (cd *canvasDrawer) IncrementOffset(x, y float64) {
 		oy = sgn * (math.Abs(oy) - float64(cd.worldSize))
 	}
 	cd.yOffset = oy
-
-	cd.calcVisibleCoordinates()
 }
 
 func (cd *canvasDrawer) PixelToCellCoord(px, py int) (x, y uint16) {
@@ -205,6 +233,7 @@ func (cd *canvasDrawer) SetCellSize(cellSize, mouseX, mouseY int) {
 	cd.cellSize = cellSize
 	cd.cellSizeInv = 1.0 / float64(cellSize)
 	cd.worldSize = cellSize * int(cd.axisLength)
+	cd.resizeBuffer()
 
 	// Use IncrementOffset to adjust the offsets
 	cd.IncrementOffset(newXOffset, newYOffset)
@@ -212,17 +241,28 @@ func (cd *canvasDrawer) SetCellSize(cellSize, mouseX, mouseY int) {
 
 func (cd *canvasDrawer) SetDimensions(height, width int) {
 	global.Call("setDimensions", cd.canvas, width, height)
-	cd.calcVisibleCoordinates()
-
-	// Update ImageData for batch rendering
 	if cd.canvasWidth != width || cd.canvasHeight != height {
 		cd.canvasWidth = width
 		cd.canvasHeight = height
-		cd.imageData = cd.ctx.Call("createImageData", width, height)
-		pixelCount := width * height
-		cd.pixelCount = pixelCount
-		cd.byteBuffer = make([]byte, pixelCount*4)
+		cd.resizeBuffer()
 	}
+}
+
+// resizeBuffer (re)allocates the cell-resolution buffer when the number of
+// visible cells changes. It is sized for the worst-case sub-cell offset so
+// panning never triggers a reallocation.
+func (cd *canvasDrawer) resizeBuffer() {
+	cols := min(cd.canvasWidth/cd.cellSize+2, int(cd.axisLength))
+	rows := min(cd.canvasHeight/cd.cellSize+2, int(cd.axisLength))
+	if cols == cd.bufCols && rows == cd.bufRows {
+		return
+	}
+	cd.bufCols = cols
+	cd.bufRows = rows
+	cd.bufCanvas = global.Get("OffscreenCanvas").New(cols, rows)
+	cd.bufCtx = cd.bufCanvas.Call("getContext", "2d", map[string]any{"alpha": false})
+	cd.imageData = cd.bufCtx.Call("createImageData", cols, rows)
+	cd.byteBuffer = make([]byte, cols*rows*4)
 }
 
 func (cd *canvasDrawer) SetSettings(age, drawGrid bool, backgroundColour, gridColour uint32) {
@@ -234,6 +274,7 @@ func (cd *canvasDrawer) SetSettings(age, drawGrid bool, backgroundColour, gridCo
 
 	cd.grid = drawGrid
 	cd.backgroundColour = backgroundColour
+	cd.backgroundStyle = fmt.Sprintf("#%06x", backgroundColour&0xffffff)
 	cd.gridColour = fmt.Sprintf("#%06x", gridColour&0xffffff)
 }
 
@@ -245,137 +286,6 @@ func (cd *canvasDrawer) SumCoords(coords ...uint16) uint16 {
 	}
 
 	return res
-}
-
-func (cd *canvasDrawer) calcVisibleCoordinates() {
-	cd.xBoundary.calc(
-		cd.canvasWidth,
-		cd.worldSize,
-		cd.xOffset,
-		cd.cellSizeInv,
-		cd.axisLength,
-	)
-	cd.yBoundary.calc(
-		cd.canvasHeight,
-		cd.worldSize,
-		cd.yOffset,
-		cd.cellSizeInv,
-		cd.axisLength,
-	)
-}
-
-func (cd *canvasDrawer) coordIsVisible(cx, cy uint16) bool {
-	if cd.xBoundary.within && (cx < cd.xBoundary.start || cx > cd.xBoundary.end) {
-		return false
-	}
-	if !cd.xBoundary.within && cx < cd.xBoundary.start && cx > cd.xBoundary.end {
-		return false
-	}
-
-	if cd.yBoundary.within && (cy < cd.yBoundary.start || cy > cd.yBoundary.end) {
-		return false
-	}
-	if !cd.yBoundary.within && cy < cd.yBoundary.start && cy > cd.yBoundary.end {
-		return false
-	}
-
-	return true
-}
-
-// drawCellToBuffer renders a cell directly to the pixel buffer with proper wrapping
-func (cd *canvasDrawer) drawCellToBuffer(cell *protocol.Cell) {
-	// Convert cell coordinates to pixel coordinates
-	pxStartX := int(cell.X)*cd.cellSize + int(cd.xOffset)
-	pxStartY := int(cell.Y)*cd.cellSize + int(cd.yOffset)
-
-	// Handle X wrapping - may need to draw in 1 or 2 locations
-	type xPosition struct {
-		start, width int
-	}
-	xPositions := []xPosition{}
-
-	if pxStartX < 0 && pxStartX+cd.cellSize > 0 {
-		// Cell straddles left edge
-		xPositions = append(xPositions, xPosition{0, pxStartX + cd.cellSize})
-		xPositions = append(xPositions, xPosition{cd.worldSize + pxStartX, -pxStartX})
-	} else if pxStartX < 0 {
-		// Cell is completely off left edge, wrap to right
-		xPositions = append(xPositions, xPosition{cd.worldSize + pxStartX, cd.cellSize})
-	} else if pxStartX >= cd.worldSize {
-		// Cell is completely off right edge, wrap to left
-		xPositions = append(xPositions, xPosition{pxStartX - cd.worldSize, cd.cellSize})
-	} else if pxStartX+cd.cellSize > cd.worldSize {
-		// Cell straddles right edge
-		rightWidth := cd.worldSize - pxStartX
-		xPositions = append(xPositions, xPosition{pxStartX, rightWidth})
-		xPositions = append(xPositions, xPosition{0, cd.cellSize - rightWidth})
-	} else {
-		// Cell is completely visible, no wrapping needed
-		xPositions = append(xPositions, xPosition{pxStartX, cd.cellSize})
-	}
-
-	type yPosition struct {
-		start, height int
-	}
-	// Handle Y wrapping - may need to draw in 1 or 2 locations
-	yPositions := []yPosition{}
-
-	if pxStartY < 0 && pxStartY+cd.cellSize > 0 {
-		// Cell straddles top edge
-		yPositions = append(yPositions, yPosition{0, pxStartY + cd.cellSize})
-		yPositions = append(yPositions, yPosition{cd.worldSize + pxStartY, -pxStartY})
-	} else if pxStartY < 0 {
-		// Cell is completely off top edge, wrap to bottom
-		yPositions = append(yPositions, yPosition{cd.worldSize + pxStartY, cd.cellSize})
-	} else if pxStartY >= cd.worldSize {
-		// Cell is completely off bottom edge, wrap to top
-		yPositions = append(yPositions, yPosition{pxStartY - cd.worldSize, cd.cellSize})
-	} else if pxStartY+cd.cellSize > cd.worldSize {
-		// Cell straddles bottom edge
-		bottomHeight := cd.worldSize - pxStartY
-		yPositions = append(yPositions, yPosition{pxStartY, bottomHeight})
-		yPositions = append(yPositions, yPosition{0, cd.cellSize - bottomHeight})
-	} else {
-		// Cell is completely visible, no wrapping needed
-		yPositions = append(yPositions, yPosition{pxStartY, cd.cellSize})
-	}
-
-	colour := cell.Colour
-	if cd.drawMode == drawAge {
-		colour = heatColours[min(cell.Age, heatMaxAge)]
-	}
-	r := (colour >> 16) & 0xff
-	g := (colour >> 8) & 0xff
-	b := colour & 0xff
-
-	// Draw all combinations of X and Y positions
-	for _, xPos := range xPositions {
-		for _, yPos := range yPositions {
-			cd.fillRect(xPos.start, yPos.start, xPos.width, yPos.height, r, g, b)
-		}
-	}
-}
-
-// fillRect fills a rectangle in the pixel buffer
-func (cd *canvasDrawer) fillRect(startX, startY, width, height int, r, g, b uint32) {
-	for y := startY; y < startY+height; y += 1 {
-		if y >= cd.canvasHeight {
-			continue
-		}
-		for x := startX; x < startX+width; x += 1 {
-			if x >= cd.canvasWidth {
-				continue
-			}
-			idx := y*cd.canvasWidth + x
-			if idx < cd.pixelCount {
-				i := idx * 4
-				cd.byteBuffer[i] = byte(r)   // R
-				cd.byteBuffer[i+1] = byte(g) // G
-				cd.byteBuffer[i+2] = byte(b) // B
-				cd.byteBuffer[i+3] = 0xff    // A
-			}
-		}
-	}
 }
 
 func (cd *canvasDrawer) drawGrid() {
