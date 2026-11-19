@@ -135,9 +135,6 @@ const App = {
     if (prefs.drawGrid !== undefined) {
       App.$.drawGrid.checked = prefs.drawGrid;
     }
-    if (prefs.speed !== undefined) {
-      App.speed.state.update(prefs.speed);
-    }
 
     App.$.save.removeAttribute('disabled');
     App.$.save.addEventListener('htmx:afterRequest', (e) => {
@@ -322,8 +319,8 @@ const App = {
     App.$.speed.addEventListener('input', () => {
       const speed = App.speed.convertSpeed(App.$.speed.value);
       App.$.speed.setAttribute('aria-valuetext', `Speed ${speed.toFixed(0)} milliseconds`);
+      App.$.speedLabel.textContent = `${speed.toFixed(0)} ms`;
       App.speed.renderDial();
-      UserPreferences.save({ speed });
       App.speed.scheduleSend(speed);
     });
 
@@ -371,7 +368,8 @@ const App = {
         // Single touch - drag
         App.moveCanvas.start(e.targetTouches[0].clientX, e.targetTouches[0].clientY);
       } else if (e.touches.length === 2) {
-        // Two finger touch - prepare for pinch zoom
+        // A second finger turns the gesture into a pinch, which never places a cell.
+        App.moveCanvas.state.mouseState = 'idle';
         App.setupPinchZoom(e);
       }
     });
@@ -397,7 +395,14 @@ const App = {
       e.preventDefault();
       e.stopPropagation();
 
-      if (e.changedTouches.length === 1 && e.touches.length === 0) {
+      if (e.touches.length === 1) {
+        // A pinch ended with one finger still down: pan from that finger, without a jump.
+        App.pinchState.initialDistance = 0;
+        const st = App.moveCanvas.state;
+        st.x = e.touches[0].clientX;
+        st.y = e.touches[0].clientY;
+        st.mouseState = 'dragging';
+      } else if (e.changedTouches.length === 1 && e.touches.length === 0) {
         const bcr = /** @type {HTMLElement} */ (e.target).getBoundingClientRect();
         App.moveCanvas.end(
           e.changedTouches[0].pageX - bcr.left,
@@ -550,6 +555,10 @@ const App = {
 
     effect(() => {
       const speed = App.speed.state();
+      // While the user's own choice waits to be sent, an echo of an earlier value must not move the dial back.
+      if (App.speed.sendTimeout !== undefined) {
+        return;
+      }
       App.$.speed.value = `${Math.pow((1000 - speed) * 0.01, 2)}`;
       App.$.speedLabel.textContent = `${speed.toFixed(0)} ms`;
       App.speed.renderDial();
@@ -650,7 +659,7 @@ const App = {
       }
       App.dragPattern.state.type = type;
       document.body.style.userSelect = 'none';
-      document.addEventListener('drop', App.dragPattern.end)
+      document.addEventListener('dragend', App.dragPattern.end)
     },
     /**
      * Draw a pattern's cells into a container at the grid's current cell size and colour
@@ -797,7 +806,7 @@ const App = {
       App.dragPattern.state.canvasDragOver = false;
       App.dragPattern.state.type = null;
       document.body.style.userSelect = '';
-      document.removeEventListener('drop', App.dragPattern.end)
+      document.removeEventListener('dragend', App.dragPattern.end)
     }
   },
   moveCanvas: {
@@ -827,7 +836,7 @@ const App = {
       }
       const dx = x - st.x;
       const dy = y - st.y;
-      if (st.mouseState === 'dragging' || Math.abs(x) > 7.5 || Math.abs(y) > 7.5) {
+      if (st.mouseState === 'dragging' || Math.abs(dx) > 7.5 || Math.abs(dy) > 7.5) {
         canvasWorkerMessage({ type: CanvasWorkerMessageType.CanvasDrag, dx, dy });
         st.x = x;
         st.y = y;
@@ -978,6 +987,7 @@ const App = {
     scheduleSend(speed) {
       clearTimeout(App.speed.sendTimeout);
       App.speed.sendTimeout = setTimeout(() => {
+        App.speed.sendTimeout = undefined;
         canvasWorkerMessage({ type: CanvasWorkerMessageType.SetSpeed, speed });
       }, SPEED_SEND_DEBOUNCE_MS);
     }

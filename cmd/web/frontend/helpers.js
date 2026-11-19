@@ -29,7 +29,6 @@ export function showError(message) {
 /**
  * @typedef {Partial<{
  *   cellSize: number,
- *   speed: number,
  *   cellColour: number,
  *   showAge: boolean,
  *   drawGrid: boolean,
