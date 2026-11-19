@@ -263,8 +263,13 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Cache the latest data instead of processing immediately
-		m.pendingData = msg.Data
+		// Keep only the latest message until the next tick. A state update folds
+		// into a pending frame's header, so the frame's cells are not lost.
+		if m.pendingData != nil && protocol.IsStateUpdate(msg.Data) && !protocol.IsStateUpdate(m.pendingData) {
+			m.pendingData = protocol.ApplyStateUpdate(m.pendingData, msg.Data)
+		} else {
+			m.pendingData = msg.Data
+		}
 
 		// Continue listening for messages and confirm receipt of this one
 		if m.isConnected() {
