@@ -26,32 +26,72 @@ type Engine interface {
 	SubmitMessage(b []byte) error
 }
 
-type state = uint32
+// ErrStopped is returned for messages submitted after the engine stopped.
+var ErrStopped = errors.New("engine stopped")
+
+// playState is the playback state machine:
+//
+//	paused  --Play-->  playing
+//	playing --Pause--> paused
+//
+// Play while playing and Pause while paused are rejected. Next is accepted only
+// while paused; every other message is accepted in both states. Generations are
+// computed on each tick while playing.
+type playState uint32
 
 const (
-	paused state = iota
+	paused playState = iota
 	playing
 )
 
+// lifecycle is the engine's lifecycle state machine:
+//
+//	created --Start--> running --ctx done--> stopped
+//
+// A created engine has already emitted its initial frame, which the server
+// reads before starting it. Entering stopped closes Output; after that, no
+// message is emitted and SubmitMessage returns ErrStopped. Start is accepted
+// only once.
+type lifecycle uint32
+
+const (
+	created lifecycle = iota
+	running
+	stopped
+)
+
 type engine struct {
-	ctx          context.Context
-	conway       conway.Conway
-	speed        atomic.Uint32 // ms
-	speedChanged atomic.Bool
-	state        atomic.Uint32
-	mutex        sync.Mutex
+	ctx    context.Context
+	conway conway.Conway
+	mutex  sync.Mutex // guards conway, output and encodeBuffer
+
+	play      atomic.Uint32 // playState
+	lifecycle atomic.Uint32 // lifecycle
+
+	// speed is the tick period in ms. A change is signalled on speedChanged, a
+	// one-slot channel: the ticker loop resets the ticker to the current speed
+	// as soon as it takes the signal, so a change applies at once, and a change
+	// made while a signal is already pending is picked up with it.
+	speed        atomic.Uint32
+	speedChanged chan struct{}
+
 	output       protocol.Output
-	outputChan   chan []byte
 	encodeBuffer []byte
+
+	// outputMu orders emitting against closing outputChan: emitters hold it
+	// for reading, and the transition to stopped holds it for writing.
+	outputMu   sync.RWMutex
+	outputChan chan []byte
 }
 
 func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
 	ws := cfg.WorldSize()
 	e := &engine{
-		ctx:        ctx,
-		conway:     conway.NewConway(cfg),
-		output:     protocol.Output{Cells: make([]protocol.Cell, 0, ws/4)},
-		outputChan: make(chan []byte, 2),
+		ctx:          ctx,
+		conway:       conway.NewConway(cfg),
+		output:       protocol.Output{Cells: make([]protocol.Cell, 0, ws/4)},
+		outputChan:   make(chan []byte, 2),
+		speedChanged: make(chan struct{}, 1),
 	}
 
 	e.speed.Store(100)
@@ -70,7 +110,7 @@ func (e *engine) Output() <-chan []byte {
 }
 
 func (e *engine) Playing() bool {
-	return e.state.Load() == playing
+	return playState(e.play.Load()) == playing
 }
 
 func (e *engine) Speed() uint32 {
@@ -78,30 +118,40 @@ func (e *engine) Speed() uint32 {
 }
 
 func (e *engine) Start() {
+	if !e.lifecycle.CompareAndSwap(uint32(created), uint32(running)) {
+		log.Println("engine already started")
+		return
+	}
+
 	ticker := time.NewTicker(e.speedAsDuration())
 	defer func() {
 		ticker.Stop()
+		e.outputMu.Lock()
+		e.lifecycle.Store(uint32(stopped))
 		close(e.outputChan)
+		e.outputMu.Unlock()
 	}()
 
 	for {
 		select {
 		case <-e.ctx.Done():
 			return
+		case <-e.speedChanged:
+			ticker.Reset(e.speedAsDuration())
 		case <-ticker.C:
-			if e.state.Load() == playing {
+			if e.Playing() {
 				e.calcNextGen()
 				e.generateOutput()
-			}
-			if e.speedChanged.Load() {
-				ticker.Reset(e.speedAsDuration())
-				e.speedChanged.Store(false)
 			}
 		}
 	}
 }
 
 func (e *engine) SubmitMessage(b []byte) error {
+	if lifecycle(e.lifecycle.Load()) == stopped {
+		return ErrStopped
+	}
+
 	msg, err := protocol.DecodeClientMessage(b)
 	if err != nil {
 		return fmt.Errorf("decode error: %w", err)
@@ -147,7 +197,7 @@ func (e *engine) generateOutput() {
 		e.output.Cells = append(e.output.Cells, protocol.Cell{X: c.X, Y: c.Y, Colour: c.Colour, Age: c.Age})
 	}
 	e.output.CellsCount = uint32(len(e.output.Cells))
-	e.output.Playing = e.state.Load() == playing
+	e.output.Playing = e.Playing()
 	e.output.Speed = uint16(e.speed.Load())
 
 	// The encoded size is only known after encoding, so encode into a reused buffer.
@@ -156,27 +206,44 @@ func (e *engine) generateOutput() {
 	out := bytes.Clone(e.encodeBuffer)
 	e.mutex.Unlock()
 
-	select {
-	case e.outputChan <- out:
-	default:
-		log.Println("NOPE")
-	}
+	e.emit(out, false)
 }
 
 // generateStateUpdate broadcasts only the play state and speed, for changes
 // that leave every cell untouched.
 func (e *engine) generateStateUpdate() {
 	su := &protocol.StateUpdate{
-		Playing: e.state.Load() == playing,
+		Playing: e.Playing(),
 		Speed:   uint16(e.speed.Load()),
 	}
 
 	// Unlike a full frame, a state update must not be dropped: in a paused game
 	// no later message would ever deliver the new state. The hub drains the
 	// channel immediately, so this never blocks for long.
+	e.emit(su.Encode(), true)
+}
+
+// emit sends b on Output unless the engine has stopped. When the channel is
+// full, it drops b, or with wait set, waits until there is room or the engine's
+// context is done.
+func (e *engine) emit(b []byte, wait bool) {
+	e.outputMu.RLock()
+	defer e.outputMu.RUnlock()
+	if lifecycle(e.lifecycle.Load()) == stopped {
+		return
+	}
+
+	if wait {
+		select {
+		case e.outputChan <- b:
+		case <-e.ctx.Done():
+		}
+		return
+	}
 	select {
-	case e.outputChan <- su.Encode():
-	case <-e.ctx.Done():
+	case e.outputChan <- b:
+	default:
+		log.Println("NOPE")
 	}
 }
 
@@ -187,20 +254,18 @@ func (e *engine) handleCommand(c *protocol.Command) error {
 		e.conway.Clear()
 		e.mutex.Unlock()
 	case protocol.Next:
-		if e.state.Load() == playing {
+		if e.Playing() {
 			return errors.New("cannot execute next command while playing")
 		}
 		e.calcNextGen()
 	case protocol.Pause:
-		if e.state.Load() == paused {
+		if !e.play.CompareAndSwap(uint32(playing), uint32(paused)) {
 			return errors.New("already paused")
 		}
-		e.state.Store(paused)
 	case protocol.Play:
-		if e.state.Load() == playing {
+		if !e.play.CompareAndSwap(uint32(paused), uint32(playing)) {
 			return errors.New("already playing")
 		}
-		e.state.Store(playing)
 	case protocol.Randomise:
 		e.mutex.Lock()
 		e.conway.Randomise()
@@ -229,12 +294,18 @@ func (e *engine) handleSetCells(sc *protocol.SetCells) error {
 }
 
 func (e *engine) handleSetSpeed(sp *protocol.SetSpeed) error {
+	if sp.Speed == 0 {
+		return errors.New("speed must be at least 1 ms")
+	}
 	new := uint32(sp.Speed)
 	old := e.speed.Swap(new)
 	if new == old {
 		return errors.New("speed has not changed")
 	}
-	e.speedChanged.Store(true)
+	select {
+	case e.speedChanged <- struct{}{}:
+	default: // a change is already signalled; the ticker loop reads the newest speed
+	}
 
 	return nil
 }
@@ -246,11 +317,13 @@ func (e *engine) setSeed(seed []byte) error {
 		return err
 	}
 	if o.Playing {
-		e.state.Store(playing)
+		e.play.Store(uint32(playing))
 	} else {
-		e.state.Store(paused)
+		e.play.Store(uint32(paused))
 	}
-	e.speed.Store(uint32(o.Speed))
+	if o.Speed > 0 {
+		e.speed.Store(uint32(o.Speed))
+	}
 	for i := range o.Cells {
 		c := o.Cells[i]
 		e.conway.SetCell(c.X, c.Y, c.Colour, c.Age)

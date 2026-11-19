@@ -95,7 +95,7 @@ func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engi
 				return
 			case o, ok := <-engine.Output():
 				if !ok {
-					continue
+					return // the engine stopped
 				}
 				if protocol.IsStateUpdate(o) {
 					// Keep the cached seed current without storing a cell-less update.
