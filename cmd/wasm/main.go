@@ -116,6 +116,9 @@ func main() {
 			}
 			postState(o.Playing, o.Speed)
 			cellsCache = o.Cells
+			if drawer != nil {
+				drawer.MarkCellsDirty()
+			}
 			draw()
 		}
 
