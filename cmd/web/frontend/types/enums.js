@@ -22,4 +22,5 @@ export const CanvasWorkerEventType = /** @type {const} */ ({
   Ready: 0,
   PlaybackStateChanged: 1,
   SpeedChanged: 2,
+  Disconnected: 3,
 });

@@ -34,6 +34,8 @@ type gameModel struct {
 	connected    bool
 	conn         *websocket.Conn
 	apiHost      string
+	gameID       int64
+	gameName     string
 	speed        atomic.Uint32
 	err          error
 	hasHalfCol   bool   // true if rightmost column should be drawn as half-width
@@ -95,7 +97,7 @@ func (m *gameModel) Init() tea.Cmd {
 	m.cellStyleCache = make(map[uint32]lipgloss.Style)
 	// Initialize all rows as dirty for first render
 	m.markAllRowsDirty()
-	return tea.Batch(connectToAPI(m.apiHost), tick())
+	return tea.Batch(connectToAPI(m.apiHost, m.gameID), tick())
 }
 
 func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -238,7 +240,7 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+s":
 			if m.isConnected() {
 				m.saving = true
-				return m, tea.Batch(m.spinner.Tick, saveGame(m.apiHost))
+				return m, tea.Batch(m.spinner.Tick, saveGame(m.apiHost, m.gameID))
 			}
 		}
 	case quitMessage:
@@ -251,6 +253,8 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connected = msg.Connected
 		m.err = msg.Err
 		m.conn = msg.Conn
+		m.gameID = msg.GameID
+		m.gameName = msg.GameName
 		m.worldSize = int(msg.WorldSize)
 		if m.isConnected() {
 			// Start listening for messages
@@ -258,7 +262,11 @@ func (m *gameModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case wsMessage:
 		if msg.Err != nil {
-			m.err = msg.Err
+			if websocket.CloseStatus(msg.Err) == 4404 {
+				m.err = fmt.Errorf("game #%d was deleted", m.gameID)
+			} else {
+				m.err = msg.Err
+			}
 			m.connected = false
 			return m, nil
 		}

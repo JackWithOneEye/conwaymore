@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/JackWithOneEye/conwaymore/cmd/web"
+	"github.com/JackWithOneEye/conwaymore/internal/games"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/coder/websocket"
@@ -24,6 +24,8 @@ type connectionResult struct {
 	Conn      *websocket.Conn
 	Connected bool
 	Err       error
+	GameID    int64
+	GameName  string
 	WorldSize uint
 }
 
@@ -31,14 +33,14 @@ type saveGameResult struct {
 	Err error
 }
 
-func connectToAPI(host string) tea.Cmd {
+func connectToAPI(host string, gameID int64) tea.Cmd {
 	return func() tea.Msg {
-		worldSize, err := getWorldSize(host)
+		info, err := resolveGame(host, gameID)
 		if err != nil {
-			return connectionResult{Conn: nil, Connected: false, Err: fmt.Errorf("could not get world size: %s", err)}
+			return connectionResult{Conn: nil, Connected: false, Err: err}
 		}
 
-		u := url.URL{Scheme: "ws", Host: host, Path: "/play"}
+		u := url.URL{Scheme: "ws", Host: host, Path: fmt.Sprintf("/games/%d/play", info.ID)}
 		conn, _, err := websocket.Dial(context.Background(), u.String(), nil)
 		if err != nil {
 			return connectionResult{Conn: nil, Connected: false, Err: fmt.Errorf("websocket connection failed: %s", err)}
@@ -46,7 +48,14 @@ func connectToAPI(host string) tea.Cmd {
 		// Set read limit to 32MB (same as WASM client)
 		conn.SetReadLimit(33554432) // 2^25
 
-		return connectionResult{Conn: conn, Connected: true, Err: nil, WorldSize: worldSize}
+		return connectionResult{
+			Conn:      conn,
+			Connected: true,
+			Err:       nil,
+			GameID:    info.ID,
+			GameName:  info.Name,
+			WorldSize: info.WorldSize,
+		}
 	}
 }
 
@@ -109,34 +118,66 @@ func sendSpeed(conn *websocket.Conn, speed uint16) tea.Cmd {
 	}
 }
 
-func saveGame(host string) tea.Cmd {
+func saveGame(host string, gameID int64) tea.Cmd {
 	return func() tea.Msg {
-		u := url.URL{Scheme: "http", Host: host, Path: "/save"}
+		u := url.URL{Scheme: "http", Host: host, Path: fmt.Sprintf("/api/games/%d/save", gameID)}
 		resp, err := http.DefaultClient.Post(u.String(), "", nil)
 		if err != nil {
 			log.Printf("Error saving game: %v", err)
 			return saveGameResult{Err: err}
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return saveGameResult{Err: fmt.Errorf("save failed with status %d", resp.StatusCode)}
+		}
 		return saveGameResult{}
 	}
 }
 
-func getWorldSize(host string) (uint, error) {
-	u := url.URL{Scheme: "http", Host: host, Path: "/globals"}
+func resolveGame(host string, gameID int64) (*games.Info, error) {
+	if gameID > 0 {
+		u := url.URL{Scheme: "http", Host: host, Path: fmt.Sprintf("/api/games/%d", gameID)}
+		resp, err := http.DefaultClient.Get(u.String())
+		if err != nil {
+			return nil, fmt.Errorf("could not fetch game #%d: %w", gameID, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("game #%d not found", gameID)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected status %d fetching game #%d", resp.StatusCode, gameID)
+		}
+		d, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		var info games.Info
+		if err := json.Unmarshal(d, &info); err != nil {
+			return nil, err
+		}
+		return &info, nil
+	}
+
+	u := url.URL{Scheme: "http", Host: host, Path: "/api/games"}
 	resp, err := http.DefaultClient.Get(u.String())
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("could not list games: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d listing games", resp.StatusCode)
+	}
 	d, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	g := &web.Globals{}
-	err = json.Unmarshal(d, g)
-	if err != nil {
-		return 0, err
+	var list []games.Info
+	if err := json.Unmarshal(d, &list); err != nil {
+		return nil, err
 	}
-	return g.WorldSize, nil
+	if len(list) == 0 {
+		return nil, fmt.Errorf("no games found; create one in the lobby or via POST /api/games")
+	}
+	return &list[0], nil
 }

@@ -1,7 +1,10 @@
 import type { PatternType } from '../patterns';
 
 export declare type Globals = {
-    WorldSize: number
+    GameID: number,
+    GameName: string,
+    WorldSize: number,
+    WSPath: string
 };
 
 export declare type CanvasMouseState = 'idle' | 'down' | 'dragging';

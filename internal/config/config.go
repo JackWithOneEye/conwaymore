@@ -2,14 +2,18 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/viper"
 )
 
 type env struct {
-	DBUrl     string `mapstructure:"DB_URL"`
-	Port      uint   `mapstructure:"PORT"`
-	WorldSize uint   `mapstructure:"WORLD_SIZE"`
+	DBUrl          string        `mapstructure:"DB_URL"`
+	Port           uint          `mapstructure:"PORT"`
+	WorldSize      uint          `mapstructure:"WORLD_SIZE"`
+	MaxGames       int           `mapstructure:"MAX_GAMES"`
+	MaxLoadedGames int           `mapstructure:"MAX_LOADED_GAMES"`
+	IdleTimeout    time.Duration `mapstructure:"IDLE_TIMEOUT"`
 }
 
 type Config struct {
@@ -22,6 +26,13 @@ func NewConfig() *Config {
 	if cfgInstance != nil {
 		return cfgInstance
 	}
+
+	viper.SetDefault("DB_URL", "./test.db")
+	viper.SetDefault("PORT", 8080)
+	viper.SetDefault("WORLD_SIZE", 1024)
+	viper.SetDefault("MAX_GAMES", 50)
+	viper.SetDefault("MAX_LOADED_GAMES", 20)
+	viper.SetDefault("IDLE_TIMEOUT", 5*time.Minute)
 
 	viper.AddConfigPath(".")
 	viper.SetConfigName("config")
@@ -51,4 +62,16 @@ func (c *Config) Port() uint {
 
 func (c *Config) WorldSize() uint {
 	return c.env.WorldSize
+}
+
+func (c *Config) MaxGames() int {
+	return c.env.MaxGames
+}
+
+func (c *Config) MaxLoadedGames() int {
+	return c.env.MaxLoadedGames
+}
+
+func (c *Config) IdleTimeout() time.Duration {
+	return c.env.IdleTimeout
 }

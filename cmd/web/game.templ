@@ -7,7 +7,7 @@ import (
 )
 
 templ Game(cellColourHex string, cellSize int, speedMs float64, playing bool, ps map[string]*patterns.Pattern) {
-	<script src="assets/js/index.js"></script>
+	<script src="/assets/js/index.js"></script>
 	@templ.JSONScript("patterns", ps)
 	<div id="canvas-wrapper" class="absolute inset-0">
 		<canvas class="block data-dragging:cursor-grab data-dragover:opacity-80" width="100" height="100">

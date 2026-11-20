@@ -60,10 +60,19 @@ try {
 }
 
 /** @type {Globals} */
-const { WorldSize } = globals;
+const { GameID, WorldSize, WSPath } = globals;
 const Patterns = getPatterns();
 
 const canvasWorker = new Worker('/assets/js/worker.js', { type: 'module' });
+
+window.addEventListener('pagehide', () => {
+  canvasWorker.terminate();
+});
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) {
+    location.reload();
+  }
+});
 
 /**
  * Send a message to the canvas worker with error handling
@@ -474,6 +483,34 @@ const App = {
           case CanvasWorkerEventType.SpeedChanged:
             App.speed.state.update(ev.speed);
             break;
+          case CanvasWorkerEventType.Disconnected: {
+            (async () => {
+              let deleted = ev.code === 4404;
+              if (!deleted) {
+                try {
+                  const res = await fetch(`/api/games/${GameID}`);
+                  deleted = res.status === 404;
+                } catch {}
+              }
+              const banner = getElementByIdOrDie('error-banner');
+              banner.replaceChildren();
+              const msg = document.createElement('span');
+              msg.textContent = deleted
+                ? 'This game was deleted. '
+                : 'Disconnected from game server. ';
+              banner.appendChild(msg);
+              const link = document.createElement('a');
+              link.href = '/';
+              link.className = 'underline ml-2';
+              link.textContent = 'Back to Lobby';
+              banner.appendChild(link);
+              banner.classList.remove('-translate-y-full');
+              for (const btn of [App.$.save, App.$.playPause, App.$.next, App.$.clear, App.$.random]) {
+                btn.disabled = true;
+              }
+            })();
+            break;
+          }
           default:
             console.error('unknown worker event type', ev);
         }
@@ -487,7 +524,8 @@ const App = {
       cellSize: Number(App.$.zoom.value),
       height: App.$.canvasWrapper.offsetHeight,
       width: App.$.canvasWrapper.offsetWidth,
-      worldSize: WorldSize
+      worldSize: WorldSize,
+      wsPath: WSPath
     }), [osCanvas]);
 
     effect(() => {

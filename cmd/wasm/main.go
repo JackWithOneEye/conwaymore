@@ -21,8 +21,9 @@ var (
 
 	cellsCache []protocol.Cell = nil
 
-	ctx  = context.Background()
-	conn *websocket.Conn
+	ctx    = context.Background()
+	conn   *websocket.Conn
+	initCh = make(chan string, 1)
 )
 
 var (
@@ -66,17 +67,27 @@ func main() {
 		onMessageFunc.Release()
 	}()
 
-	var err error
-
-	conn, _, err = websocket.Dial(ctx, "/play", &websocket.DialOptions{})
-	if err != nil {
-		log.Fatalf("websocket dial failed: %s", err)
-	}
-	conn.SetReadLimit(33554432) // 2^25
-	log.Println("WS CONN OPEN")
-
 	global.Call("addEventListener", "message", onMessageFunc)
 	global.Call("postMessage", map[string]any{"type": "ready"})
+
+	wsPath := <-initCh
+
+	var err error
+	conn, _, err = websocket.Dial(ctx, wsPath, &websocket.DialOptions{})
+	if err != nil {
+		log.Printf("websocket dial failed: %s", err)
+		global.Call("postMessage", []any{
+			map[string]any{
+				"type":   3,
+				"code":   int(websocket.CloseStatus(err)),
+				"reason": err.Error(),
+			},
+		})
+		return
+	}
+	defer conn.CloseNow()
+	conn.SetReadLimit(33554432) // 2^25
+	log.Printf("WS CONN OPEN (%s)", wsPath)
 
 	postState := func(playing bool, speed uint16) {
 		global.Call(
@@ -101,18 +112,29 @@ func main() {
 	for {
 		_, b, err := conn.Read(ctx)
 		if err != nil {
-			log.Fatalf("could not read from websocket: %s", err)
+			code := int(websocket.CloseStatus(err))
+			log.Printf("websocket closed (code=%d): %s", code, err)
+			global.Call("postMessage", []any{
+				map[string]any{
+					"type":   3,
+					"code":   code,
+					"reason": err.Error(),
+				},
+			})
+			return
 		}
 		if protocol.IsStateUpdate(b) {
 			su, err := protocol.DecodeStateUpdate(b)
 			if err != nil {
-				log.Fatalf("could not decode state update: %s", err)
+				log.Printf("could not decode state update: %s", err)
+				return
 			}
 			postState(su.Playing, su.Speed)
 		} else {
 			err = o.Decode(b)
 			if err != nil {
-				log.Fatalf("could not decode data: %s", err)
+				log.Printf("could not decode data: %s", err)
+				return
 			}
 			postState(o.Playing, o.Speed)
 			cellsCache = o.Cells
@@ -124,7 +146,8 @@ func main() {
 
 		// Confirm receipt so the server keeps at most a couple of frames in flight.
 		if err := sendClientMessage(&protocol.FrameAck{}); err != nil {
-			log.Fatalf("could not ack frame: %s", err)
+			log.Printf("could not ack frame: %s", err)
+			return
 		}
 	}
 }
@@ -172,6 +195,12 @@ func handleInit(data js.Value) js.Value {
 		data.Get("width").Int(),
 	)
 	initialised = true
+
+	wsPath := "/play"
+	if v := data.Get("wsPath"); !v.IsUndefined() && !v.IsNull() && v.String() != "" {
+		wsPath = v.String()
+	}
+	initCh <- wsPath
 	return js.Undefined()
 }
 
@@ -308,5 +337,8 @@ func scaleCellSize(cellSize float64) float64 {
 }
 
 func sendClientMessage(msg protocol.ClientMessage) error {
+	if conn == nil {
+		return fmt.Errorf("not connected yet")
+	}
 	return conn.Write(ctx, websocket.MessageBinary, msg.Encode())
 }

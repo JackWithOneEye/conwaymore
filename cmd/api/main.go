@@ -5,28 +5,20 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/JackWithOneEye/conwaymore/internal/config"
 	"github.com/JackWithOneEye/conwaymore/internal/database"
-	"github.com/JackWithOneEye/conwaymore/internal/engine"
+	"github.com/JackWithOneEye/conwaymore/internal/games"
 	"github.com/JackWithOneEye/conwaymore/internal/server"
 )
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	cfg := config.NewConfig()
 	dbs := database.NewDatabaseService(cfg)
-
-	seed, err := dbs.GetSeed()
-	if err != nil {
-		log.Fatalf("could not get seed: %s", err)
-	}
-
-	engine := engine.NewEngine(cfg, seed, ctx)
-
-	s := server.NewServer(cfg, dbs, engine, ctx)
+	mgr := games.NewManager(cfg, dbs)
+	s := server.NewServer(cfg, mgr)
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -34,7 +26,7 @@ func main() {
 	}()
 
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	select {
 	case err := <-errChan:
 		log.Printf("could not serve: %v", err)
@@ -42,15 +34,18 @@ func main() {
 		log.Printf("terminating: %v", sig)
 	}
 
-	ctx2, cancel := context.WithTimeout(ctx, time.Second*5)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err = s.Shutdown(ctx2)
-	if err != nil {
+	// Stop all running games and autosave their state before shutting down HTTP
+	// (which also closes active WebSocket connections cleanly).
+	if err := mgr.Shutdown(shutdownCtx); err != nil {
+		log.Printf("could not shutdown games manager: %v", err)
+	}
+	if err := s.Shutdown(shutdownCtx); err != nil {
 		log.Printf("could not shutdown server: %v", err)
 	}
-	err = dbs.Close()
-	if err != nil {
+	if err := dbs.Close(); err != nil {
 		log.Printf("could not close database: %v", err)
 	}
 }

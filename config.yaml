@@ -1,3 +1,6 @@
 db_url: ./test.db
 port: 8080
 world_size: 1024
+max_games: 50
+max_loaded_games: 20
+idle_timeout: 5m

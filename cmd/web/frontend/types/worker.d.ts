@@ -9,6 +9,7 @@ export declare type CanvasWorkerInitMessage = {
   height: number;
   width: number;
   worldSize: number;
+  wsPath: string;
 };
 
 export declare type CanvasDragMessage = {
@@ -93,6 +94,12 @@ export declare type SpeedChangedEvent = {
   speed: number;
 };
 
-export declare type CanvasWorkerEvent = PlaybackStateChangedEvent | ReadyEvent | SpeedChangedEvent;
+export declare type DisconnectedEvent = {
+  type: typeof CanvasWorkerEventType.Disconnected;
+  code: number;
+  reason: string;
+};
+
+export declare type CanvasWorkerEvent = PlaybackStateChangedEvent | ReadyEvent | SpeedChangedEvent | DisconnectedEvent;
 
 // #endregion canvas worker event

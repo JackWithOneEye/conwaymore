@@ -95,9 +95,10 @@ func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
 	}
 
 	e.speed.Store(100)
-	err := e.setSeed(seed)
-	if err != nil {
-		log.Printf("error setting seed: %s", err)
+	if len(seed) > 0 {
+		if err := e.setSeed(seed); err != nil {
+			log.Printf("error setting seed: %s", err)
+		}
 	}
 
 	e.generateOutput()

@@ -19,12 +19,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/JackWithOneEye/conwaymore/internal/database"
-	"github.com/JackWithOneEye/conwaymore/internal/engine"
+	"github.com/JackWithOneEye/conwaymore/internal/games"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	"github.com/JackWithOneEye/conwaymore/internal/server"
 	"github.com/gorilla/websocket"
@@ -38,39 +39,54 @@ import (
 var frameAck = []byte{3}
 
 type testConfig struct {
-	port      uint
-	worldSize uint
+	dbURL       string
+	port        uint
+	worldSize   uint
+	maxGames    int
+	maxLoaded   int
+	idleTimeout time.Duration
 }
 
-func (c *testConfig) Port() uint      { return c.port }
-func (c *testConfig) WorldSize() uint { return c.worldSize }
+func (c *testConfig) DBUrl() string              { return c.dbURL }
+func (c *testConfig) Port() uint                 { return c.port }
+func (c *testConfig) WorldSize() uint            { return c.worldSize }
+func (c *testConfig) MaxGames() int              { return c.maxGames }
+func (c *testConfig) MaxLoadedGames() int        { return c.maxLoaded }
+func (c *testConfig) IdleTimeout() time.Duration { return c.idleTimeout }
 
-type testDatabaseConfig struct{ dbUrl string }
-
-func (c *testDatabaseConfig) DBUrl() string { return c.dbUrl }
-
-func newTestServer(t *testing.T, worldSize uint) *httptest.Server {
+func newTestServer(t *testing.T, worldSize uint) (*httptest.Server, int64) {
 	t.Helper()
 
 	tmpFile, err := os.CreateTemp("", "test_wire_*.db")
 	require.NoError(t, err)
 	require.NoError(t, tmpFile.Close())
 
-	cfg := &testConfig{port: 8080, worldSize: worldSize}
-	db := database.NewDatabaseService(&testDatabaseConfig{dbUrl: tmpFile.Name()})
-	ctx, cancel := context.WithCancel(context.Background())
-	eng := engine.NewEngine(cfg, nil, ctx)
-	srv := server.NewServer(cfg, db, eng, ctx)
+	cfg := &testConfig{
+		dbURL:       tmpFile.Name(),
+		port:        8080,
+		worldSize:   worldSize,
+		maxGames:    10,
+		maxLoaded:   10,
+		idleTimeout: 5 * time.Minute,
+	}
+	db := database.NewDatabaseService(cfg)
+	mgr := games.NewManager(cfg, db)
+	info, err := mgr.Create(context.Background(), games.CreateParams{
+		Name:      "Wire Test",
+		WorldSize: worldSize,
+	})
+	require.NoError(t, err)
+	srv := server.NewServer(cfg, mgr)
 	ts := httptest.NewServer(srv.Handler)
 
 	t.Cleanup(func() {
-		cancel()
+		_ = mgr.Shutdown(context.Background())
 		ts.Close()
 		srv.Close()
 		db.Close()
 		os.Remove(tmpFile.Name())
 	})
-	return ts
+	return ts, info.ID
 }
 
 // syncedConn serializes websocket writes (gorilla allows only one concurrent
@@ -80,12 +96,12 @@ type syncedConn struct {
 	c  *websocket.Conn
 }
 
-func dial(t *testing.T, ts *httptest.Server) *syncedConn {
+func dial(t *testing.T, ts *httptest.Server, gameID int64) *syncedConn {
 	t.Helper()
 	u, err := url.Parse(ts.URL)
 	require.NoError(t, err)
 	u.Scheme = "ws"
-	u.Path = "/play"
+	u.Path = "/games/" + strconv.FormatInt(gameID, 10) + "/play"
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close() })
@@ -122,8 +138,8 @@ func msgSpeed(t *testing.T, msg []byte) (speed uint16, cells int) {
 }
 
 func TestSpeedChangeBandwidth(t *testing.T) {
-	ts := newTestServer(t, 256)
-	c := dial(t, ts)
+	ts, gameID := newTestServer(t, 256)
+	c := dial(t, ts, gameID)
 
 	_ = c.readMsg(t) // connect frame
 
@@ -162,9 +178,9 @@ func TestSpeedChangeBandwidth(t *testing.T) {
 }
 
 func TestSlowClientBackpressure(t *testing.T) {
-	ts := newTestServer(t, 256)
-	driver := dial(t, ts)
-	slow := dial(t, ts)
+	ts, gameID := newTestServer(t, 256)
+	driver := dial(t, ts, gameID)
+	slow := dial(t, ts, gameID)
 
 	_ = driver.readMsg(t) // connect frame
 	_ = slow.readMsg(t)   // connect frame

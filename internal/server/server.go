@@ -2,17 +2,17 @@ package server
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/JackWithOneEye/conwaymore/cmd/web"
-	"github.com/JackWithOneEye/conwaymore/internal/database"
-	"github.com/JackWithOneEye/conwaymore/internal/engine"
+	"github.com/JackWithOneEye/conwaymore/internal/games"
 	"github.com/JackWithOneEye/conwaymore/internal/livereload"
 	"github.com/JackWithOneEye/conwaymore/internal/patterns"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
@@ -31,176 +31,350 @@ type ServerConfig interface {
 // behind by at most maxInFlight frames plus one pending slot.
 const maxInFlight = 2
 
+// StatusGameDeleted is the WebSocket close code sent to viewers when a game is deleted.
+const StatusGameDeleted websocket.StatusCode = 4404
+
 type server struct {
-	cfg          ServerConfig
-	db           database.DatabaseService
-	engine       engine.Engine
-	listeners    map[*listener]struct{}
-	listenersMtx sync.RWMutex
-	lastOutput   atomic.Value
+	cfg   ServerConfig
+	games games.Manager
 }
 
-type listener struct {
-	msgs chan []byte // capacity 1: the pending message, replaced by newer ones
-
-	mu       sync.Mutex
-	inFlight int // messages written to the client but not yet acked
-}
-
-// offer hands the newest broadcast message to the listener. While delivery is
-// still in progress the pending message is replaced (never queued): full frames
-// supersede whatever is pending, and state updates are folded into a pending
-// frame's header so neither cells nor the new state are lost.
-//
-// Called only by the hub goroutine while holding listenersMtx, whose pump only
-// ever receives: after the non-blocking drain the channel is empty, so the
-// final send can never block. Do not add a second sender without upholding
-// that invariant — a blocking send here deadlocks the hub for every client.
-func (l *listener) offer(o []byte) {
-	var pending []byte
-	select {
-	case pending = <-l.msgs:
-	default:
-	}
-
-	if pending != nil && protocol.IsStateUpdate(o) && !protocol.IsStateUpdate(pending) {
-		o = protocol.ApplyStateUpdate(pending, o)
-	}
-	l.msgs <- o
-}
-
-func NewServer(cfg ServerConfig, db database.DatabaseService, engine engine.Engine, ctx context.Context) *http.Server {
+func NewServer(cfg ServerConfig, mgr games.Manager) *http.Server {
 	s := &server{
-		cfg:       cfg,
-		db:        db,
-		engine:    engine,
-		listeners: make(map[*listener]struct{}),
+		cfg:   cfg,
+		games: mgr,
 	}
 
-	srv := &http.Server{
+	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port()),
 		Handler:           s.registerRoutes(),
 		IdleTimeout:       time.Minute,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	// The engine emits its initial state on creation. Storing it before serving
-	// guarantees that /save has a seed and every client receives the state on connect.
-	s.lastOutput.Store(<-engine.Output())
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case o, ok := <-engine.Output():
-				if !ok {
-					return // the engine stopped
-				}
-				if protocol.IsStateUpdate(o) {
-					// Keep the cached seed current without storing a cell-less update.
-					if lo := s.lastOutput.Load(); lo != nil {
-						s.lastOutput.Store(protocol.ApplyStateUpdate(lo.([]byte), o))
-					}
-				} else {
-					s.lastOutput.Store(o)
-				}
-
-				s.listenersMtx.RLock()
-				for l := range s.listeners {
-					l.offer(o)
-				}
-				s.listenersMtx.RUnlock()
-			}
-		}
-	}()
-	go engine.Start()
-
-	return srv
-}
-
-func (s *server) addListener(l *listener) {
-	s.listenersMtx.Lock()
-	defer s.listenersMtx.Unlock()
-	s.listeners[l] = struct{}{}
-	if lo := s.lastOutput.Load(); lo != nil {
-		l.msgs <- lo.([]byte)
-	}
-}
-
-func (s *server) removeListener(l *listener) {
-	s.listenersMtx.Lock()
-	defer s.listenersMtx.Unlock()
-	delete(s.listeners, l)
 }
 
 func (s *server) registerRoutes() http.Handler {
 	r := gin.Default()
 
-	r.Static("/assets", "./cmd/web/assets")
-
-	globals := web.Globals{
-		WorldSize: s.cfg.WorldSize(),
-	}
-
+	assets := r.Group("/assets", func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/assets/fonts/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		c.Next()
+	})
+	assets.Static("/", "./cmd/web/assets")
 	r.GET("/_livereload", livereload.Handler)
 
-	r.GET("/", livereload.InjectScript("/_livereload", func(c *gin.Context) {
-		templ.Handler(web.Index("/game", &globals)).ServeHTTP(c.Writer, c.Request)
-	}))
+	// HTML lobby and game pages
+	r.GET("/", livereload.InjectScript("/_livereload", s.lobbyHandler))
+	r.GET("/games/list", s.gameListFragmentHandler)
+	r.POST("/games", s.createGameFormHandler)
+	r.GET("/games/:id", livereload.InjectScript("/_livereload", s.gamePageHandler))
+	r.GET("/games/:id/view", s.gameViewHandler)
+	r.GET("/games/:id/play", s.playHandler)
 
-	r.GET("/game", func(c *gin.Context) {
-		templ.Handler(web.Game("#ff6600", 30, float64(s.engine.Speed()), s.engine.Playing(), patterns.Patterns)).ServeHTTP(c.Writer, c.Request)
-	})
-
-	r.GET("/globals", func(c *gin.Context) {
-		w := c.Writer
-		d, err := json.Marshal(globals)
-		if err != nil {
-			log.Printf("could not marshal globals: %s", err)
-			c.String(http.StatusInternalServerError, "error")
-			return
-		}
-		w.Write(d)
-		w.Flush()
-	})
-	//
-	// r.GET("/patterns", func(c *gin.Context) {
-	// 	w := c.Writer
-	// 	d, err := json.Marshal(patterns)
-	// 	if err != nil {
-	// 		log.Printf("could not marshal patterns: %s", err)
-	// 		c.String(http.StatusInternalServerError, "error")
-	// 		return
-	// 	}
-	// 	w.Write(d)
-	// 	w.Flush()
-	// })
-
-	r.GET("/play", s.playHandler)
-
-	r.POST("/save", func(c *gin.Context) {
-		if lo := s.lastOutput.Load(); lo != nil {
-			err := s.db.WriteSeed(c, lo.([]byte))
-			if err != nil {
-				log.Printf("could not save seed: %s", err)
-				c.String(http.StatusInternalServerError, "could not save seed")
-			}
-			return
-		}
-		c.String(http.StatusInternalServerError, "no seed")
-	})
+	// JSON API
+	api := r.Group("/api")
+	api.GET("/games", s.apiListGames)
+	api.POST("/games", s.apiCreateGame)
+	api.GET("/games/:id", s.apiGetGame)
+	api.PATCH("/games/:id", s.apiRenameGame)
+	api.DELETE("/games/:id", s.apiDeleteGame)
+	api.POST("/games/:id/save", s.apiSaveGame)
 
 	return r
 }
 
+func parseGameID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func (s *server) lobbyHandler(c *gin.Context) {
+	list, err := s.games.List(c.Request.Context())
+	if err != nil {
+		log.Printf("could not list games: %s", err)
+		c.String(http.StatusInternalServerError, "could not list games")
+		return
+	}
+	templ.Handler(web.Lobby(list, s.cfg.WorldSize(), "", 0, "")).ServeHTTP(c.Writer, c.Request)
+}
+
+func (s *server) gameListFragmentHandler(c *gin.Context) {
+	list, err := s.games.List(c.Request.Context())
+	if err != nil {
+		log.Printf("could not list games: %s", err)
+		c.String(http.StatusInternalServerError, "could not list games")
+		return
+	}
+	templ.Handler(web.GameList(list)).ServeHTTP(c.Writer, c.Request)
+}
+
+func (s *server) createGameFormHandler(c *gin.Context) {
+	name := c.PostForm("name")
+	wsRaw := c.PostForm("worldSize")
+
+	var ws uint
+	if wsRaw != "" {
+		parsed, err := strconv.ParseUint(wsRaw, 10, 32)
+		if err == nil {
+			ws = uint(parsed)
+		}
+	}
+
+	info, err := s.games.Create(c.Request.Context(), games.CreateParams{
+		Name:      name,
+		WorldSize: ws,
+	})
+	if err != nil {
+		status := http.StatusInternalServerError
+		errMsg := "could not create game"
+		var verr *games.ValidationError
+		switch {
+		case errors.As(err, &verr):
+			status = http.StatusBadRequest
+			errMsg = verr.Message
+		case errors.Is(err, games.ErrMaxGamesReached):
+			status = http.StatusConflict
+			errMsg = err.Error()
+		default:
+			log.Printf("could not create game: %s", err)
+		}
+
+		list, _ := s.games.List(c.Request.Context())
+		c.Status(status)
+		templ.Handler(web.Lobby(list, s.cfg.WorldSize(), name, ws, errMsg)).ServeHTTP(c.Writer, c.Request)
+		return
+	}
+
+	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/games/%d", info.ID))
+}
+
+func (s *server) gamePageHandler(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.Status(http.StatusNotFound)
+		templ.Handler(web.GameNotFound("That game does not exist.")).ServeHTTP(c.Writer, c.Request)
+		return
+	}
+
+	info, err := s.games.GetInfo(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.Status(http.StatusNotFound)
+		templ.Handler(web.GameNotFound(fmt.Sprintf("Game #%d was not found.", id))).ServeHTTP(c.Writer, c.Request)
+		return
+	}
+	if err != nil {
+		log.Printf("could not get game %d: %s", id, err)
+		c.String(http.StatusInternalServerError, "could not load game")
+		return
+	}
+
+	globals := &web.Globals{
+		GameID:    info.ID,
+		GameName:  info.Name,
+		WorldSize: info.WorldSize,
+		WSPath:    fmt.Sprintf("/games/%d/play", info.ID),
+	}
+	templ.Handler(web.Index(fmt.Sprintf("/games/%d/view", info.ID), globals)).ServeHTTP(c.Writer, c.Request)
+}
+
+func (s *server) gameViewHandler(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	info, err := s.games.GetInfo(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("could not get game %d: %s", id, err)
+		c.String(http.StatusInternalServerError, "could not load game")
+		return
+	}
+
+	templ.Handler(web.Game("#ff6600", 30, float64(info.Speed), info.Playing, patterns.Patterns)).ServeHTTP(c.Writer, c.Request)
+}
+
+func (s *server) apiListGames(c *gin.Context) {
+	list, err := s.games.List(c.Request.Context())
+	if err != nil {
+		log.Printf("could not list games: %s", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list games"})
+		return
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+func (s *server) apiCreateGame(c *gin.Context) {
+	var params games.CreateParams
+	if err := c.ShouldBindJSON(&params); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	info, err := s.games.Create(c.Request.Context(), params)
+	if err != nil {
+		var verr *games.ValidationError
+		switch {
+		case errors.As(err, &verr):
+			c.JSON(http.StatusBadRequest, verr)
+		case errors.Is(err, games.ErrMaxGamesReached):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		default:
+			log.Printf("could not create game: %s", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create game"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, info)
+}
+
+func (s *server) apiGetGame(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	info, err := s.games.GetInfo(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("could not get game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not get game"})
+		return
+	}
+
+	c.JSON(http.StatusOK, info)
+}
+
+func (s *server) apiRenameGame(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	info, err := s.games.Rename(c.Request.Context(), id, body.Name)
+	if err != nil {
+		var verr *games.ValidationError
+		switch {
+		case errors.As(err, &verr):
+			c.JSON(http.StatusBadRequest, verr)
+		case errors.Is(err, games.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		default:
+			log.Printf("could not rename game %d: %s", id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not rename game"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, info)
+}
+
+func (s *server) apiDeleteGame(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	err := s.games.Delete(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("could not delete game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete game"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+func (s *server) apiSaveGame(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	err := s.games.Save(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("could not save game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save game"})
+		return
+	}
+
+	c.Status(http.StatusOK)
+}
+
+func (s *server) subscribeGame(ctx context.Context, id int64) (games.Game, *games.Subscriber, error) {
+	// Retry once if the room closed mid-subscribe due to a concurrent idle unload.
+	for attempt := 0; attempt < 2; attempt++ {
+		g, err := s.games.Get(ctx, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		sub, err := g.Subscribe()
+		if errors.Is(err, games.ErrGameClosed) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		return g, sub, nil
+	}
+	return nil, nil, games.ErrNotFound
+}
+
 func (s *server) playHandler(c *gin.Context) {
-	l := &listener{msgs: make(chan []byte, 1)}
-	s.addListener(l)
-	defer func() {
-		s.removeListener(l)
-		close(l.msgs)
-	}()
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	game, sub, err := s.subscribeGame(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+	if errors.Is(err, games.ErrMaxLoadedGamesReached) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		log.Printf("could not load game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load game"})
+		return
+	}
+	defer game.Unsubscribe(sub)
 
 	w := c.Writer
 	r := c.Request
@@ -210,8 +384,6 @@ func (s *server) playHandler(c *gin.Context) {
 	})
 	if err != nil {
 		log.Printf("could not open websocket: %s", err)
-		_, _ = w.Write([]byte("could not open websocket"))
-		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	defer socket.CloseNow()
@@ -254,21 +426,22 @@ func (s *server) playHandler(c *gin.Context) {
 		wg.Wait()
 	}()
 
+	inFlight := 0
 	for {
-		// Stop writing once maxInFlight messages await acknowledgement; the
-		// client drains the backlog by acking, and always receives the newest
-		// pending message rather than a queue of stale ones.
-		l.mu.Lock()
-		sendable := l.inFlight < maxInFlight
-		l.mu.Unlock()
-
-		var outbox chan []byte
-		if sendable {
-			outbox = l.msgs
+		var outbox <-chan []byte
+		if inFlight < maxInFlight {
+			outbox = sub.Frames()
 		}
 
 		select {
 		case <-wsCtx.Done():
+			return
+		case <-sub.Done():
+			if sub.Deleted() {
+				_ = socket.Close(StatusGameDeleted, "game deleted")
+			} else {
+				_ = socket.Close(websocket.StatusGoingAway, "server shutting down")
+			}
 			return
 		case payload := <-outbox:
 			err := socket.Write(wsCtx, websocket.MessageBinary, payload)
@@ -279,23 +452,24 @@ func (s *server) playHandler(c *gin.Context) {
 				log.Printf("could not write to websocket: %s", err)
 				return
 			}
-			l.mu.Lock()
-			l.inFlight++
-			l.mu.Unlock()
-		case msg := <-readerMsgChan:
+			inFlight++
+		case msg, ok := <-readerMsgChan:
+			if !ok {
+				return
+			}
 			if protocol.IsFrameAck(msg) {
-				l.mu.Lock()
-				if l.inFlight > 0 {
-					l.inFlight--
+				if inFlight > 0 {
+					inFlight--
 				}
-				l.mu.Unlock()
 				continue
 			}
-			err = s.engine.SubmitMessage(msg)
-			if err != nil {
+			if err := game.Submit(msg); err != nil {
 				log.Printf("websocket command produced an error: %s", err)
 			}
-		case err := <-readerErrChan:
+		case err, ok := <-readerErrChan:
+			if !ok {
+				return
+			}
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 				return
 			}

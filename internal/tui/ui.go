@@ -14,6 +14,9 @@ import (
 type quitMessage struct{}
 
 type UIModel struct {
+	APIHost string
+	GameID  int64
+
 	game              tea.Model
 	foreground        tea.Model
 	overlay           tea.Model
@@ -23,6 +26,11 @@ type UIModel struct {
 func (m *UIModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{}
 
+	host := m.APIHost
+	if host == "" {
+		host = "localhost:8080"
+	}
+
 	m.game = &gameModel{
 		grid:         make([][]uint32, 20),
 		cells:        []protocol.Cell{},
@@ -31,7 +39,8 @@ func (m *UIModel) Init() tea.Cmd {
 		running:      false,
 		saving:       false,
 		connected:    false,
-		apiHost:      "localhost:8080",
+		apiHost:      host,
+		gameID:       m.GameID,
 		speed:        atomic.Uint32{},
 		termWidth:    80,
 		currentColor: 0xFFFFFF, // Default to white

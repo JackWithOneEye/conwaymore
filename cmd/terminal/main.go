@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,10 @@ import (
 )
 
 func main() {
+	host := flag.String("host", "localhost:8080", "API server host:port")
+	gameID := flag.Int64("game", 0, "Game ID to connect to (defaults to first available game)")
+	flag.Parse()
+
 	if len(os.Getenv("DEBUG")) > 0 {
 		f, err := tea.LogToFile("debug.log", "debug")
 		if err != nil {
@@ -18,7 +23,7 @@ func main() {
 		}
 		defer f.Close()
 	}
-	p := tea.NewProgram(&tui.UIModel{}, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(&tui.UIModel{APIHost: *host, GameID: *gameID}, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		log.Printf("Error running terminal UI: %v", err)
 		os.Exit(1)

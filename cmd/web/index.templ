@@ -1,5 +1,7 @@
 package web
 
+import "fmt"
+
 templ Index(defaultPath string, globals *Globals) {
 <!DOCTYPE html>
 <html lang="en">
@@ -7,7 +9,7 @@ templ Index(defaultPath string, globals *Globals) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Conway's Game of Life</title>
+  <title>{ globals.GameName } — Conway's Game of Life</title>
   <script>
     // Apply the theme before first paint: saved choice, else the OS preference.
     (() => {
@@ -19,8 +21,9 @@ templ Index(defaultPath string, globals *Globals) {
         theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     })();
   </script>
-  <link href="assets/css/output.css" rel="stylesheet" />
-  <script src="assets/js/vendor.js"></script>
+  <link rel="preload" href="/assets/fonts/silkscreen-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link href="/assets/css/output.css" rel="stylesheet" />
+  <script src="/assets/js/vendor.js"></script>
   @templ.JSONScript("globals", globals)
 </head>
 
@@ -28,15 +31,17 @@ templ Index(defaultPath string, globals *Globals) {
   <main class="relative h-dvh w-full overflow-hidden">
     <div hx-get={ defaultPath } hx-trigger="load" hx-swap="outerHTML"></div>
     <header class="hud absolute top-3 left-3 z-10 flex items-center gap-3 px-3 py-2">
+      <a href="/" class="px-text-btn" aria-label="Back to lobby">← Lobby</a>
       <svg class="size-4 text-(--accent)" viewBox="0 0 3 3" shape-rendering="crispEdges" aria-hidden="true">
         <path fill="currentColor" d="M1 0h1v1H1zM2 1h1v1H2zM0 2h3v1H0z"></path>
       </svg>
-      <h1 class="text-[8px] sm:text-base leading-none">Conway's Game of Life</h1>
+      <h1 id="game-title" class="text-[8px] sm:text-base leading-none">{ globals.GameName }</h1>
+      <span class="text-(--muted) compact:hidden">{ fmt.Sprintf("#%d · %d×%d", globals.GameID, globals.WorldSize, globals.WorldSize) }</span>
     </header>
     <div class="hud absolute top-3 right-3 z-10 flex gap-2 p-2">
       <form id="game-form">
         <input id="seed-input" name="seed" type="hidden" />
-        <button id="save-game" class="px-text-btn" disabled hx-post="/save" hx-swap="none">
+        <button id="save-game" class="px-text-btn" disabled hx-post={ fmt.Sprintf("/api/games/%d/save", globals.GameID) } hx-swap="none">
           <svg class="size-[14px]" viewBox="0 0 7 7" shape-rendering="crispEdges" aria-hidden="true">
             <path fill="currentColor" fill-rule="evenodd" d="M0 0h6v1h1v6H0zM1 1v5h5V2H5v1H2V1z"></path>
             <path fill="currentColor" d="M3 1h1v1H3zM2 4h3v1H2z"></path>

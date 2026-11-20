@@ -20,6 +20,9 @@ type ClientMessage interface {
 }
 
 func DecodeClientMessage(b []byte) (ClientMessage, error) {
+	if len(b) == 0 {
+		return nil, errors.New("empty client message")
+	}
 	var msg ClientMessage
 	switch b[0] {
 	case byte(command):

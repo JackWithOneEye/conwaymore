@@ -48,6 +48,15 @@ func (o *Output) Encode(b []byte) []byte {
 	return b
 }
 
+// PeekHeader reads the playing flag and speed from the 6-byte header of an
+// encoded Output frame without decoding its cells.
+func PeekHeader(b []byte) (playing bool, speed uint16, ok bool) {
+	if len(b) < cellsOffset || IsStateUpdate(b) {
+		return false, 0, false
+	}
+	return b[0] == 1, binary.BigEndian.Uint16(b[1:]), true
+}
+
 // Decode decodes b into o, reusing the capacity of o.Cells.
 func (o *Output) Decode(b []byte) error {
 	if len(b) < cellsOffset {
