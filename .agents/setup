@@ -44,6 +44,7 @@ warm_go_caches() {
   templ generate
   go build ./...
   GOOS=js GOARCH=wasm go build -o /dev/null ./cmd/wasm
+  GOOS=js GOARCH=wasm go build -o /dev/null ./cmd/wasmengine
   go test -count=1 -run '^$' ./... >/dev/null
 }
 

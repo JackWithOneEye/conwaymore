@@ -24,3 +24,13 @@ export const CanvasWorkerEventType = /** @type {const} */ ({
   SpeedChanged: 2,
   Disconnected: 3,
 });
+
+export const EngineWorkerMessageType = /** @type {const} */ ({
+  Init: 0,
+  Snapshot: 1,
+});
+
+export const EngineWorkerEventType = /** @type {const} */ ({
+  Ready: 0,
+  Snapshot: 1,
+});

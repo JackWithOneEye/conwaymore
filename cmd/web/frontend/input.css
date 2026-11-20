@@ -298,6 +298,18 @@
     background: var(--canvas-bg);
   }
 
+  .mode-tag {
+    padding: 1px 4px;
+    border: 1px solid var(--muted);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .mode-tag[data-mode='single'] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
   .theme-opt {
     padding: 1px 3px;
     color: var(--muted);

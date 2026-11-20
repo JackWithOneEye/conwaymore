@@ -27,6 +27,7 @@ type worldSizeProvider interface {
 type GameRecord struct {
 	ID        int64
 	Name      string
+	Mode      string
 	WorldSize uint
 	Seed      []byte
 	CreatedAt int64
@@ -35,7 +36,7 @@ type GameRecord struct {
 
 type DatabaseService interface {
 	Close() error
-	CreateGame(ctx context.Context, name string, worldSize uint, seed []byte, maxGames int) (*GameRecord, error)
+	CreateGame(ctx context.Context, name, mode string, worldSize uint, seed []byte, maxGames int) (*GameRecord, error)
 	GetGame(ctx context.Context, id int64) (*GameRecord, error)
 	ListGames(ctx context.Context) ([]GameRecord, error)
 	RenameGame(ctx context.Context, id int64, name string) error
@@ -77,15 +78,48 @@ func NewDatabaseService(cfg DatabaseConfig) DatabaseService {
 	return s
 }
 
+// migrate brings the schema up to date; PRAGMA user_version is the schema version.
 func (s *service) migrate(defaultWorldSize uint) error {
 	var version int
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
 	}
-	if version >= 1 {
-		return nil
+	if version < 1 {
+		if err := s.migrateV1(defaultWorldSize); err != nil {
+			return err
+		}
 	}
+	if version < 2 {
+		if err := s.migrateV2(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+// migrateV2 adds the game mode: "multi" games run on the server, "single" games
+// run in the player's browser and are only stored here. Existing games are multi.
+func (s *service) migrateV2() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`
+		ALTER TABLE games ADD COLUMN mode TEXT NOT NULL DEFAULT 'multi'
+			CHECK (mode IN ('multi', 'single'))
+	`)
+	if err != nil {
+		return fmt.Errorf("add games.mode column: %w", err)
+	}
+	if _, err := tx.Exec("PRAGMA user_version = 2"); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *service) migrateV1(defaultWorldSize uint) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin migration tx: %w", err)
@@ -146,7 +180,7 @@ func (s *service) Close() error {
 	return s.db.Close()
 }
 
-func (s *service) CreateGame(ctx context.Context, name string, worldSize uint, seed []byte, maxGames int) (*GameRecord, error) {
+func (s *service) CreateGame(ctx context.Context, name, mode string, worldSize uint, seed []byte, maxGames int) (*GameRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -166,8 +200,8 @@ func (s *service) CreateGame(ctx context.Context, name string, worldSize uint, s
 	now := time.Now().UnixMilli()
 	res, err := tx.ExecContext(
 		ctx,
-		"INSERT INTO games (name, world_size, seed, created_at, saved_at) VALUES (?, ?, ?, ?, NULL)",
-		name, worldSize, seed, now,
+		"INSERT INTO games (name, mode, world_size, seed, created_at, saved_at) VALUES (?, ?, ?, ?, ?, NULL)",
+		name, mode, worldSize, seed, now,
 	)
 	if err != nil {
 		return nil, err
@@ -185,6 +219,7 @@ func (s *service) CreateGame(ctx context.Context, name string, worldSize uint, s
 	return &GameRecord{
 		ID:        id,
 		Name:      name,
+		Mode:      mode,
 		WorldSize: worldSize,
 		Seed:      seed,
 		CreatedAt: now,
@@ -196,9 +231,9 @@ func (s *service) GetGame(ctx context.Context, id int64) (*GameRecord, error) {
 	var savedAt sql.NullInt64
 	err := s.db.QueryRowContext(
 		ctx,
-		"SELECT id, name, world_size, seed, created_at, saved_at FROM games WHERE id = ?",
+		"SELECT id, name, mode, world_size, seed, created_at, saved_at FROM games WHERE id = ?",
 		id,
-	).Scan(&rec.ID, &rec.Name, &rec.WorldSize, &rec.Seed, &rec.CreatedAt, &savedAt)
+	).Scan(&rec.ID, &rec.Name, &rec.Mode, &rec.WorldSize, &rec.Seed, &rec.CreatedAt, &savedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -215,7 +250,7 @@ func (s *service) GetGame(ctx context.Context, id int64) (*GameRecord, error) {
 func (s *service) ListGames(ctx context.Context) ([]GameRecord, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		"SELECT id, name, world_size, seed, created_at, saved_at FROM games ORDER BY id ASC",
+		"SELECT id, name, mode, world_size, seed, created_at, saved_at FROM games ORDER BY id ASC",
 	)
 	if err != nil {
 		return nil, err
@@ -226,7 +261,7 @@ func (s *service) ListGames(ctx context.Context) ([]GameRecord, error) {
 	for rows.Next() {
 		var rec GameRecord
 		var savedAt sql.NullInt64
-		if err := rows.Scan(&rec.ID, &rec.Name, &rec.WorldSize, &rec.Seed, &rec.CreatedAt, &savedAt); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Mode, &rec.WorldSize, &rec.Seed, &rec.CreatedAt, &savedAt); err != nil {
 			return nil, err
 		}
 		if savedAt.Valid {

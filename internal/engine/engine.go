@@ -29,6 +29,10 @@ type Engine interface {
 // ErrStopped is returned for messages submitted after the engine stopped.
 var ErrStopped = errors.New("engine stopped")
 
+// overrunPause is how long the ticker loop sleeps after a tick whose work took
+// longer than the tick period, before it takes the next tick.
+const overrunPause = time.Millisecond
+
 // playState is the playback state machine:
 //
 //	paused  --Play-->  playing
@@ -140,9 +144,17 @@ func (e *engine) Start() {
 		case <-e.speedChanged:
 			ticker.Reset(e.speedAsDuration())
 		case <-ticker.C:
+			start := time.Now()
 			if e.Playing() {
 				e.calcNextGen()
 				e.generateOutput()
+			}
+			// After an overrun the next tick is already due, so the loop would
+			// never block. In a single-threaded runtime such as WASM, where
+			// nothing preempts a goroutine that never blocks, that starves every
+			// other goroutine and the browser's event loop, so sleep briefly.
+			if time.Since(start) >= e.speedAsDuration() {
+				time.Sleep(overrunPause)
 			}
 		}
 	}

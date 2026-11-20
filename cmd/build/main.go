@@ -32,6 +32,10 @@ func main() {
 				OutputPath: "worker",
 			},
 			{
+				InputPath:  "cmd/web/frontend/worker/engine-worker.js",
+				OutputPath: "engine-worker",
+			},
+			{
 				InputPath:  fmt.Sprintf("%s/lib/wasm/wasm_exec.js", goroot),
 				OutputPath: "wasm_exec",
 			},

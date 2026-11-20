@@ -11,19 +11,34 @@ import (
 	"syscall/js"
 
 	"github.com/JackWithOneEye/conwaymore/cmd/wasm/canvas"
+	"github.com/JackWithOneEye/conwaymore/cmd/wasm/session"
 	"github.com/JackWithOneEye/conwaymore/internal/patterns"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	"github.com/coder/websocket"
 )
 
+// sessionParams say where the game runs: in the engine worker, reached over
+// enginePort, for a single-player game, else on the server at wsPath.
+type sessionParams struct {
+	enginePort js.Value
+	wsPath     string
+}
+
 var (
 	initialised = false
 
+	// pendingFrame is the newest full frame not yet drawn. It is decoded only
+	// when drawn, so frames that arrive faster than the display refreshes cost
+	// almost nothing, and each is acked as soon as it arrives.
+	pendingFrame []byte
+	// frame is reused so that decoding overwrites the previous frame's cells
+	// instead of allocating new ones; cellsCache aliases frame.Cells.
+	frame      protocol.Output
 	cellsCache []protocol.Cell = nil
 
-	ctx    = context.Background()
-	conn   *websocket.Conn
-	initCh = make(chan string, 1)
+	initCh = make(chan sessionParams, 1)
+	// sess is set once, before any message is sent on it; until then sends fail.
+	sess session.Session
 )
 
 var (
@@ -35,6 +50,15 @@ var (
 	drawHandle = js.Null()
 	drawFunc   = js.FuncOf(func(this js.Value, args []js.Value) any {
 		if drawer != nil {
+			if pendingFrame != nil {
+				if err := frame.Decode(pendingFrame); err != nil {
+					log.Printf("could not decode frame: %s", err)
+				} else {
+					cellsCache = frame.Cells
+					drawer.MarkCellsDirty()
+				}
+				pendingFrame = nil
+			}
 			drawer.Draw(cellsCache)
 			drawHandle = js.Null()
 		}
@@ -58,6 +82,12 @@ const (
 	msgSettingsChange
 )
 
+const (
+	evtPlaybackStateChanged = 1
+	evtSpeedChanged         = 2
+	evtDisconnected         = 3
+)
+
 func main() {
 	global := js.Global()
 	defer func() {
@@ -70,57 +100,46 @@ func main() {
 	global.Call("addEventListener", "message", onMessageFunc)
 	global.Call("postMessage", map[string]any{"type": "ready"})
 
-	wsPath := <-initCh
-
-	var err error
-	conn, _, err = websocket.Dial(ctx, wsPath, &websocket.DialOptions{})
-	if err != nil {
-		log.Printf("websocket dial failed: %s", err)
+	postDisconnected := func(err error) {
 		global.Call("postMessage", []any{
 			map[string]any{
-				"type":   3,
+				"type":   evtDisconnected,
 				"code":   int(websocket.CloseStatus(err)),
 				"reason": err.Error(),
 			},
 		})
+	}
+
+	s, err := openSession(<-initCh)
+	if err != nil {
+		log.Printf("could not open session: %s", err)
+		postDisconnected(err)
 		return
 	}
-	defer conn.CloseNow()
-	conn.SetReadLimit(33554432) // 2^25
-	log.Printf("WS CONN OPEN (%s)", wsPath)
+	defer s.Close()
+	sess = s
 
 	postState := func(playing bool, speed uint16) {
 		global.Call(
 			"postMessage",
 			[]any{
 				map[string]any{
-					"type":    1,
+					"type":    evtPlaybackStateChanged,
 					"playing": playing,
 				},
 				map[string]any{
-					"type":  2,
+					"type":  evtSpeedChanged,
 					"speed": speed,
 				},
 			},
 		)
 	}
 
-	// o is reused so that decoding overwrites the cells from the previous message instead of
-	// allocating new ones. cellsCache aliases o.Cells, which is safe because draw runs on this
-	// single-threaded runtime and never in the middle of Decode.
-	var o protocol.Output
 	for {
-		_, b, err := conn.Read(ctx)
+		b, err := sess.Recv()
 		if err != nil {
-			code := int(websocket.CloseStatus(err))
-			log.Printf("websocket closed (code=%d): %s", code, err)
-			global.Call("postMessage", []any{
-				map[string]any{
-					"type":   3,
-					"code":   code,
-					"reason": err.Error(),
-				},
-			})
+			log.Printf("session ended (code=%d): %s", websocket.CloseStatus(err), err)
+			postDisconnected(err)
 			return
 		}
 		if protocol.IsStateUpdate(b) {
@@ -131,25 +150,28 @@ func main() {
 			}
 			postState(su.Playing, su.Speed)
 		} else {
-			err = o.Decode(b)
-			if err != nil {
-				log.Printf("could not decode data: %s", err)
+			playing, speed, ok := protocol.PeekHeader(b)
+			if !ok {
+				log.Printf("could not decode frame header")
 				return
 			}
-			postState(o.Playing, o.Speed)
-			cellsCache = o.Cells
-			if drawer != nil {
-				drawer.MarkCellsDirty()
-			}
+			postState(playing, speed)
+			pendingFrame = b
 			draw()
 		}
-
-		// Confirm receipt so the server keeps at most a couple of frames in flight.
-		if err := sendClientMessage(&protocol.FrameAck{}); err != nil {
-			log.Printf("could not ack frame: %s", err)
-			return
-		}
 	}
+}
+
+func openSession(p sessionParams) (session.Session, error) {
+	if p.enginePort.Truthy() {
+		return session.NewWorker(p.enginePort), nil
+	}
+	s, err := session.Dial(context.Background(), p.wsPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("WS CONN OPEN (%s)", p.wsPath)
+	return s, nil
 }
 
 func draw() {
@@ -196,11 +218,10 @@ func handleInit(data js.Value) js.Value {
 	)
 	initialised = true
 
-	wsPath := "/play"
-	if v := data.Get("wsPath"); !v.IsUndefined() && !v.IsNull() && v.String() != "" {
-		wsPath = v.String()
+	initCh <- sessionParams{
+		enginePort: data.Get("enginePort"),
+		wsPath:     data.Get("wsPath").String(),
 	}
-	initCh <- wsPath
 	return js.Undefined()
 }
 
@@ -337,8 +358,8 @@ func scaleCellSize(cellSize float64) float64 {
 }
 
 func sendClientMessage(msg protocol.ClientMessage) error {
-	if conn == nil {
+	if sess == nil {
 		return fmt.Errorf("not connected yet")
 	}
-	return conn.Write(ctx, websocket.MessageBinary, msg.Encode())
+	return sess.Send(msg)
 }

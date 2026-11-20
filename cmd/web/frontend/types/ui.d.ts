@@ -3,6 +3,7 @@ import type { PatternType } from '../patterns';
 export declare type Globals = {
     GameID: number,
     GameName: string,
+    Mode: 'multi' | 'single',
     WorldSize: number,
     WSPath: string
 };

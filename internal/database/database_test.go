@@ -37,18 +37,19 @@ func TestLegacyMigration(t *testing.T) {
 	require.Len(t, games, 1)
 	require.Equal(t, int64(1), games[0].ID)
 	require.Equal(t, "Default", games[0].Name)
+	require.Equal(t, "multi", games[0].Mode)
 	require.Equal(t, uint(512), games[0].WorldSize)
 	require.Equal(t, legacySeed, games[0].Seed)
 	require.NotNil(t, games[0].SavedAt)
 
-	// Confirm legacy table was dropped and user_version is 1.
+	// Confirm legacy table was dropped and the schema is current.
 	raw2, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err)
 	defer raw2.Close()
 
 	var version int
 	require.NoError(t, raw2.QueryRow("PRAGMA user_version").Scan(&version))
-	require.Equal(t, 1, version)
+	require.Equal(t, 2, version)
 
 	var name string
 	err = raw2.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='conway'").Scan(&name)
@@ -62,19 +63,22 @@ func TestGameCRUDAndLimits(t *testing.T) {
 
 	ctx := context.Background()
 
-	g1, err := dbs.CreateGame(ctx, "Alpha", 128, nil, 2)
+	g1, err := dbs.CreateGame(ctx, "Alpha", "multi", 128, nil, 2)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), g1.ID)
 	require.Equal(t, "Alpha", g1.Name)
 	require.Equal(t, uint(128), g1.WorldSize)
 	require.Nil(t, g1.SavedAt)
 
-	g2, err := dbs.CreateGame(ctx, "Beta", 2048, []byte{0, 0, 100, 0, 0, 0}, 2)
+	g2, err := dbs.CreateGame(ctx, "Beta", "single", 2048, []byte{0, 0, 100, 0, 0, 0}, 2)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), g2.ID)
+	got2, err := dbs.GetGame(ctx, g2.ID)
+	require.NoError(t, err)
+	require.Equal(t, "single", got2.Mode)
 
 	// Max games cap enforced.
-	_, err = dbs.CreateGame(ctx, "Gamma", 256, nil, 2)
+	_, err = dbs.CreateGame(ctx, "Gamma", "multi", 256, nil, 2)
 	require.ErrorIs(t, err, ErrMaxGamesReached)
 
 	// Rename.
@@ -99,11 +103,47 @@ func TestGameCRUDAndLimits(t *testing.T) {
 	require.ErrorIs(t, dbs.DeleteGame(ctx, g1.ID), ErrNotFound)
 	require.ErrorIs(t, dbs.RenameGame(ctx, g1.ID, "Nope"), ErrNotFound)
 
+	// Unknown mode rejected by SQLite CHECK constraint.
+	_, err = dbs.CreateGame(ctx, "BadMode", "solo", 256, nil, 10)
+	require.Error(t, err)
+
 	// Invalid world size rejected by SQLite CHECK constraint.
-	_, err = dbs.CreateGame(ctx, "TooSmall", 64, nil, 10)
+	_, err = dbs.CreateGame(ctx, "TooSmall", "multi", 64, nil, 10)
 	require.Error(t, err)
-	_, err = dbs.CreateGame(ctx, "NotPow2", 300, nil, 10)
+	_, err = dbs.CreateGame(ctx, "NotPow2", "multi", 300, nil, 10)
 	require.Error(t, err)
-	_, err = dbs.CreateGame(ctx, "TooBig", 4096, nil, 10)
+	_, err = dbs.CreateGame(ctx, "TooBig", "multi", 4096, nil, 10)
 	require.Error(t, err)
+}
+
+// TestV1Migration upgrades a database written by the multi-game release, whose
+// games table has no mode column: its games become multiplayer games.
+func TestV1Migration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v1.db")
+
+	raw, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = raw.Exec(`
+		CREATE TABLE games (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT NOT NULL,
+			world_size INTEGER NOT NULL,
+			seed       BLOB,
+			created_at INTEGER NOT NULL,
+			saved_at   INTEGER
+		);
+		INSERT INTO games (name, world_size, seed, created_at) VALUES ('Old', 256, x'000064000000', 1);
+		PRAGMA user_version = 1;
+	`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	dbs := NewDatabaseService(testDBConfig{url: dbPath, worldSize: 1024})
+	defer dbs.Close()
+
+	got, err := dbs.GetGame(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, "Old", got.Name)
+	require.Equal(t, "multi", got.Mode)
+	require.Equal(t, []byte{0, 0, 100, 0, 0, 0}, got.Seed)
 }

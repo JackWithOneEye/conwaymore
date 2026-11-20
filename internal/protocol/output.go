@@ -9,6 +9,18 @@ import (
 
 const cellsOffset = 6
 
+// Bounds on the encoded size of one cell: a position uvarint of 1 to 5 bytes,
+// 3 colour bytes, and an age uvarint of 1 to 3 bytes.
+const (
+	minEncodedCellSize = 1 + 3 + 1
+	maxEncodedCellSize = binary.MaxVarintLen32 + 3 + 3
+)
+
+// MaxEncodedSize is the largest possible encoding of an Output with the given number of cells.
+func MaxEncodedSize(cells int) int {
+	return cellsOffset + cells*maxEncodedCellSize
+}
+
 type Output struct {
 	Cells      []Cell
 	CellsCount uint32
@@ -66,9 +78,13 @@ func (o *Output) Decode(b []byte) error {
 	o.Speed = binary.BigEndian.Uint16(b[1:])
 	o.CellsCount = uint32(b[3])<<16 | uint32(b[4])<<8 | uint32(b[5])
 	n := int(o.CellsCount)
+	b = b[cellsOffset:]
+	// Check before allocating, so that a header claiming millions of cells cannot allocate for them.
+	if len(b) < n*minEncodedCellSize {
+		return errors.New("byte length does not match cells count")
+	}
 	o.Cells = slices.Grow(o.Cells[:0], n)[:n]
 
-	b = b[cellsOffset:]
 	var pos uint32
 	for i := range o.Cells {
 		dist, l := binary.Uvarint(b)

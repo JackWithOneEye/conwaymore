@@ -1,4 +1,4 @@
-import type { CanvasWorkerEventType, CanvasWorkerMessageType, Command } from './enums';
+import type { CanvasWorkerEventType, CanvasWorkerMessageType, Command, EngineWorkerEventType, EngineWorkerMessageType } from './enums';
 
 // #region canvas worker message
 
@@ -9,7 +9,8 @@ export declare type CanvasWorkerInitMessage = {
   height: number;
   width: number;
   worldSize: number;
-  wsPath: string;
+  wsPath: string; // empty for a single-player game
+  enginePort?: MessagePort; // set for a single-player game: the port to the engine worker that runs it
 };
 
 export declare type CanvasDragMessage = {
@@ -103,3 +104,32 @@ export declare type DisconnectedEvent = {
 export declare type CanvasWorkerEvent = PlaybackStateChangedEvent | ReadyEvent | SpeedChangedEvent | DisconnectedEvent;
 
 // #endregion canvas worker event
+
+// #region engine worker (cmd/wasmengine), which runs a single-player game
+
+export declare type EngineWorkerInitMessage = {
+  type: typeof EngineWorkerMessageType.Init;
+  worldSize: number;
+  seed: Uint8Array; // the saved state, an encoded protocol.Output; empty for a new game
+  port: MessagePort; // the canvas worker plays the game on the other end, with the wire protocol
+};
+
+// Asks for the game's current state; answered with an EngineSnapshotEvent.
+export declare type EngineSnapshotMessage = {
+  type: typeof EngineWorkerMessageType.Snapshot;
+};
+
+export declare type EngineWorkerMessage = EngineWorkerInitMessage | EngineSnapshotMessage;
+
+export declare type EngineReadyEvent = {
+  type: typeof EngineWorkerEventType.Ready;
+};
+
+export declare type EngineSnapshotEvent = {
+  type: typeof EngineWorkerEventType.Snapshot;
+  seed: Uint8Array<ArrayBuffer>; // an encoded protocol.Output
+};
+
+export declare type EngineWorkerEvent = EngineReadyEvent | EngineSnapshotEvent;
+
+// #endregion engine worker

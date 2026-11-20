@@ -156,6 +156,9 @@ func resolveGame(host string, gameID int64) (*games.Info, error) {
 		if err := json.Unmarshal(d, &info); err != nil {
 			return nil, err
 		}
+		if info.Mode == games.ModeSingle {
+			return nil, fmt.Errorf("game #%d is a single-player game, which only runs in the browser", gameID)
+		}
 		return &info, nil
 	}
 
@@ -176,8 +179,10 @@ func resolveGame(host string, gameID int64) (*games.Info, error) {
 	if err := json.Unmarshal(d, &list); err != nil {
 		return nil, err
 	}
-	if len(list) == 0 {
-		return nil, fmt.Errorf("no games found; create one in the lobby or via POST /api/games")
+	for i := range list {
+		if list[i].Mode != games.ModeSingle {
+			return &list[i], nil
+		}
 	}
-	return &list[0], nil
+	return nil, fmt.Errorf("no multiplayer games found; create one in the lobby or via POST /api/games")
 }

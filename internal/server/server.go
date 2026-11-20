@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -25,11 +26,6 @@ type ServerConfig interface {
 	Port() uint
 	WorldSize() uint
 }
-
-// maxInFlight caps how many messages per client may be written but not yet
-// acknowledged. Clients ack every received message, so a slow client falls
-// behind by at most maxInFlight frames plus one pending slot.
-const maxInFlight = 2
 
 // StatusGameDeleted is the WebSocket close code sent to viewers when a game is deleted.
 const StatusGameDeleted websocket.StatusCode = 4404
@@ -81,6 +77,8 @@ func (s *server) registerRoutes() http.Handler {
 	api.PATCH("/games/:id", s.apiRenameGame)
 	api.DELETE("/games/:id", s.apiDeleteGame)
 	api.POST("/games/:id/save", s.apiSaveGame)
+	api.GET("/games/:id/seed", s.apiGetSeed)
+	api.PUT("/games/:id/seed", s.apiPutSeed)
 
 	return r
 }
@@ -100,7 +98,7 @@ func (s *server) lobbyHandler(c *gin.Context) {
 		c.String(http.StatusInternalServerError, "could not list games")
 		return
 	}
-	templ.Handler(web.Lobby(list, s.cfg.WorldSize(), "", 0, "")).ServeHTTP(c.Writer, c.Request)
+	templ.Handler(web.Lobby(list, s.cfg.WorldSize(), "", "", 0, "")).ServeHTTP(c.Writer, c.Request)
 }
 
 func (s *server) gameListFragmentHandler(c *gin.Context) {
@@ -115,6 +113,7 @@ func (s *server) gameListFragmentHandler(c *gin.Context) {
 
 func (s *server) createGameFormHandler(c *gin.Context) {
 	name := c.PostForm("name")
+	mode := games.Mode(c.PostForm("mode"))
 	wsRaw := c.PostForm("worldSize")
 
 	var ws uint
@@ -127,6 +126,7 @@ func (s *server) createGameFormHandler(c *gin.Context) {
 
 	info, err := s.games.Create(c.Request.Context(), games.CreateParams{
 		Name:      name,
+		Mode:      mode,
 		WorldSize: ws,
 	})
 	if err != nil {
@@ -146,7 +146,7 @@ func (s *server) createGameFormHandler(c *gin.Context) {
 
 		list, _ := s.games.List(c.Request.Context())
 		c.Status(status)
-		templ.Handler(web.Lobby(list, s.cfg.WorldSize(), name, ws, errMsg)).ServeHTTP(c.Writer, c.Request)
+		templ.Handler(web.Lobby(list, s.cfg.WorldSize(), name, mode, ws, errMsg)).ServeHTTP(c.Writer, c.Request)
 		return
 	}
 
@@ -176,8 +176,11 @@ func (s *server) gamePageHandler(c *gin.Context) {
 	globals := &web.Globals{
 		GameID:    info.ID,
 		GameName:  info.Name,
+		Mode:      info.Mode,
 		WorldSize: info.WorldSize,
-		WSPath:    fmt.Sprintf("/games/%d/play", info.ID),
+	}
+	if info.Mode == games.ModeMulti {
+		globals.WSPath = fmt.Sprintf("/games/%d/play", info.ID)
 	}
 	templ.Handler(web.Index(fmt.Sprintf("/games/%d/view", info.ID), globals)).ServeHTTP(c.Writer, c.Request)
 }
@@ -325,6 +328,10 @@ func (s *server) apiSaveGame(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
 		return
 	}
+	if errors.Is(err, games.ErrSinglePlayer) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
 	if err != nil {
 		log.Printf("could not save game %d: %s", id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save game"})
@@ -332,6 +339,80 @@ func (s *server) apiSaveGame(c *gin.Context) {
 	}
 
 	c.Status(http.StatusOK)
+}
+
+func (s *server) apiGetSeed(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	seed, err := s.games.GetSeed(c.Request.Context(), id)
+	switch {
+	case errors.Is(err, games.ErrNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+	case errors.Is(err, games.ErrMultiplayer):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case err != nil:
+		log.Printf("could not get seed of game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not get game state"})
+	default:
+		c.Header("Cache-Control", "no-store")
+		c.Data(http.StatusOK, "application/octet-stream", seed)
+	}
+}
+
+func (s *server) apiPutSeed(c *gin.Context) {
+	id, ok := parseGameID(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+
+	info, err := s.games.GetInfo(c.Request.Context(), id)
+	if errors.Is(err, games.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("could not get game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save game"})
+		return
+	}
+	if info.Mode != games.ModeSingle {
+		c.JSON(http.StatusConflict, gin.H{"error": games.ErrMultiplayer.Error()})
+		return
+	}
+
+	// No state of this world encodes to more bytes than a full world.
+	limit := int64(protocol.MaxEncodedSize(int(info.WorldSize * info.WorldSize)))
+	seed, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, limit))
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "game state is too large"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "could not read game state"})
+		return
+	}
+
+	err = s.games.SaveSeed(c.Request.Context(), id, seed)
+	var verr *games.ValidationError
+	switch {
+	case errors.As(err, &verr):
+		c.JSON(http.StatusBadRequest, verr)
+	case errors.Is(err, games.ErrNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "game not found"})
+	case errors.Is(err, games.ErrMultiplayer):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case err != nil:
+		log.Printf("could not save seed of game %d: %s", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save game"})
+	default:
+		c.Status(http.StatusOK)
+	}
 }
 
 func (s *server) subscribeGame(ctx context.Context, id int64) (games.Game, *games.Subscriber, error) {
@@ -367,6 +448,10 @@ func (s *server) playHandler(c *gin.Context) {
 	}
 	if errors.Is(err, games.ErrMaxLoadedGamesReached) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, games.ErrSinglePlayer) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	if err != nil {
@@ -429,7 +514,7 @@ func (s *server) playHandler(c *gin.Context) {
 	inFlight := 0
 	for {
 		var outbox <-chan []byte
-		if inFlight < maxInFlight {
+		if inFlight < protocol.MaxInFlight {
 			outbox = sub.Frames()
 		}
 

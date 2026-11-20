@@ -1,6 +1,10 @@
 package web
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/JackWithOneEye/conwaymore/internal/games"
+)
 
 templ Index(defaultPath string, globals *Globals) {
 <!DOCTYPE html>
@@ -37,11 +41,22 @@ templ Index(defaultPath string, globals *Globals) {
       </svg>
       <h1 id="game-title" class="text-[8px] sm:text-base leading-none">{ globals.GameName }</h1>
       <span class="text-(--muted) compact:hidden">{ fmt.Sprintf("#%d · %d×%d", globals.GameID, globals.WorldSize, globals.WorldSize) }</span>
+      <span id="game-mode" class="mode-tag" data-mode={ string(globals.Mode) }>{ modeLabel(globals.Mode) }</span>
     </header>
     <div class="hud absolute top-3 right-3 z-10 flex gap-2 p-2">
       <form id="game-form">
-        <input id="seed-input" name="seed" type="hidden" />
-        <button id="save-game" class="px-text-btn" disabled hx-post={ fmt.Sprintf("/api/games/%d/save", globals.GameID) } hx-swap="none">
+        // Multiplayer games are saved by the server; single-player games run here, so index.js uploads their state.
+        <button
+          id="save-game"
+          class="px-text-btn"
+          disabled
+          if globals.Mode == games.ModeMulti {
+            hx-post={ fmt.Sprintf("/api/games/%d/save", globals.GameID) }
+            hx-swap="none"
+          } else {
+            type="button"
+          }
+        >
           <svg class="size-[14px]" viewBox="0 0 7 7" shape-rendering="crispEdges" aria-hidden="true">
             <path fill="currentColor" fill-rule="evenodd" d="M0 0h6v1h1v6H0zM1 1v5h5V2H5v1H2V1z"></path>
             <path fill="currentColor" d="M3 1h1v1H3zM2 4h3v1H2z"></path>
@@ -60,4 +75,11 @@ templ Index(defaultPath string, globals *Globals) {
 </body>
 
 </html>
+}
+
+func modeLabel(m games.Mode) string {
+	if m == games.ModeSingle {
+		return "Single-player"
+	}
+	return "Multiplayer"
 }

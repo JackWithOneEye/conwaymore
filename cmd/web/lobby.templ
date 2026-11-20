@@ -6,7 +6,7 @@ import (
 	"github.com/JackWithOneEye/conwaymore/internal/games"
 )
 
-templ Lobby(gameList []games.Info, defaultWorldSize uint, formName string, formWorldSize uint, formError string) {
+templ Lobby(gameList []games.Info, defaultWorldSize uint, formName string, formMode games.Mode, formWorldSize uint, formError string) {
 <!DOCTYPE html>
 <html lang="en">
 
@@ -63,6 +63,24 @@ templ Lobby(gameList []games.Info, defaultWorldSize uint, formName string, formW
             class="px-input"
           />
         </div>
+
+        <fieldset class="flex flex-col gap-2">
+          <legend class="text-(--muted) mb-1.5">Mode</legend>
+          <div class="flex flex-wrap gap-2">
+            for _, m := range games.ValidModes {
+              <label class="px-radio-chip">
+                <input
+                  type="radio"
+                  name="mode"
+                  value={ string(m) }
+                  checked?={ selectedMode(formMode) == m }
+                />
+                <span>{ modeLabel(m) }</span>
+              </label>
+            }
+          </div>
+          <p class="text-(--muted)">Single-player games run in your browser and are saved to the server.</p>
+        </fieldset>
 
         <fieldset class="flex flex-col gap-2">
           <legend class="text-(--muted) mb-1.5">World size</legend>
@@ -206,10 +224,13 @@ templ GameList(gameList []games.Info) {
               </a>
             </div>
             <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-(--muted)">
+              <span class="mode-tag" data-mode={ string(g.Mode) }>{ modeLabel(g.Mode) }</span>
               <span>{ fmt.Sprintf("%d×%d", g.WorldSize, g.WorldSize) }</span>
               <span>{ gameStateLabel(g) }</span>
               <span>{ fmt.Sprintf("%d ms", g.Speed) }</span>
-              <span>{ viewerLabel(g.Viewers) }</span>
+              if g.Mode == games.ModeMulti {
+                <span>{ viewerLabel(g.Viewers) }</span>
+              }
             </div>
           </div>
           <div class="flex shrink-0 items-center gap-2">
@@ -285,7 +306,20 @@ func selectedWorldSize(formWS, defaultWS uint) uint {
 	return 1024
 }
 
+func selectedMode(formMode games.Mode) games.Mode {
+	if formMode == games.ModeSingle {
+		return games.ModeSingle
+	}
+	return games.ModeMulti
+}
+
 func gameStateLabel(g games.Info) string {
+	if g.Mode == games.ModeSingle {
+		if g.SavedAt == nil {
+			return "Never saved"
+		}
+		return "Saved"
+	}
 	if !g.Loaded {
 		if g.Playing {
 			return "Idle (will resume)"

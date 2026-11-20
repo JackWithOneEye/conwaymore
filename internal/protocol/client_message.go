@@ -104,9 +104,15 @@ func (sc *SetCells) decode(b []byte) error {
 }
 
 // FrameAck confirms receipt of a single server message. Clients send one ack
-// per received message so the server can keep at most a couple of frames in
+// per received message so the server can keep at most MaxInFlight frames in
 // flight per client instead of queueing frames that may be stale on arrival.
 type FrameAck struct{}
+
+// MaxInFlight caps how many messages a game may send a client before the
+// client acks the oldest of them. A sender keeps the newest message it cannot
+// send yet and replaces it with each newer one (see Coalesce), so a slow
+// client falls behind by at most MaxInFlight messages plus that one.
+const MaxInFlight = 2
 
 func (f *FrameAck) Encode() []byte {
 	return []byte{byte(frameAck)}

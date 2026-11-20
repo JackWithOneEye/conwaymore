@@ -409,6 +409,125 @@ func (suite *APITestSuite) TestRenameAndDeleteClosesWebSocketWith4404() {
 	suite.Equal(4404, closeErr.Code)
 }
 
+// do sends a request to the server and returns the recorded response.
+func (suite *APITestSuite) do(method, path string, body []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	suite.server.Handler.ServeHTTP(w, req)
+	return w
+}
+
+// TestSinglePlayerStateRoundTrip stores the state of a single-player game the
+// way the browser that runs it does, and reads it back as the next visit does.
+func (suite *APITestSuite) TestSinglePlayerStateRoundTrip() {
+	payload, _ := json.Marshal(games.CreateParams{Name: "Solo", Mode: games.ModeSingle, WorldSize: 128})
+	w := suite.do("POST", "/api/games", payload)
+	suite.Require().Equal(http.StatusCreated, w.Code, w.Body.String())
+	var info games.Info
+	suite.Require().NoError(json.Unmarshal(w.Body.Bytes(), &info))
+	suite.Equal(games.ModeSingle, info.Mode)
+	seedPath := fmt.Sprintf("/api/games/%d/seed", info.ID)
+
+	// A new game has no state yet; the browser starts it empty.
+	w = suite.do("GET", seedPath, nil)
+	suite.Equal(http.StatusOK, w.Code)
+	suite.Empty(w.Body.Bytes())
+
+	// The game page runs it in the browser: no WebSocket path.
+	w = suite.do("GET", fmt.Sprintf("/games/%d", info.ID), nil)
+	suite.Equal(http.StatusOK, w.Code)
+	suite.Contains(w.Body.String(), `"Mode":"single"`)
+	suite.NotContains(w.Body.String(), "/play")
+
+	state := protocol.Output{
+		Cells:      []protocol.Cell{{X: 127, Y: 0, Colour: 0x00ff00, Age: 7}, {X: 3, Y: 127, Colour: 0x0000ff, Age: 0}},
+		CellsCount: 2,
+		Playing:    true,
+		Speed:      250,
+	}
+	w = suite.do("PUT", seedPath, state.Encode(nil))
+	suite.Require().Equal(http.StatusOK, w.Code, w.Body.String())
+
+	w = suite.do("GET", seedPath, nil)
+	suite.Require().Equal(http.StatusOK, w.Code)
+	var got protocol.Output
+	suite.Require().NoError(got.Decode(w.Body.Bytes()))
+	suite.Equal(state, got)
+
+	// The lobby lists the saved state.
+	w = suite.do("GET", fmt.Sprintf("/api/games/%d", info.ID), nil)
+	suite.Require().NoError(json.Unmarshal(w.Body.Bytes(), &info))
+	suite.NotNil(info.SavedAt)
+	suite.True(info.Playing)
+	suite.Equal(uint32(250), info.Speed)
+	suite.False(info.Loaded, "a single-player game never runs on the server")
+}
+
+func (suite *APITestSuite) TestSinglePlayerRejectsInvalidState() {
+	payload, _ := json.Marshal(games.CreateParams{Name: "Solo", Mode: games.ModeSingle, WorldSize: 128})
+	w := suite.do("POST", "/api/games", payload)
+	suite.Require().Equal(http.StatusCreated, w.Code)
+	seedPath := "/api/games/1/seed"
+
+	valid := protocol.Output{Cells: []protocol.Cell{{X: 5, Y: 5, Colour: 1}}, CellsCount: 1, Speed: 100}
+	suite.Require().Equal(http.StatusOK, suite.do("PUT", seedPath, valid.Encode(nil)).Code)
+
+	outside := protocol.Output{Cells: []protocol.Cell{{X: 128, Y: 0, Colour: 1}}, CellsCount: 1, Speed: 100}
+	encoded := outside.Encode(nil)
+	cases := map[string][]byte{
+		"cell outside the world": encoded,
+		"truncated":              encoded[:len(encoded)-1],
+		"empty":                  {},
+		"state update":           (&protocol.StateUpdate{Speed: 100}).Encode(),
+	}
+	for name, body := range cases {
+		w := suite.do("PUT", seedPath, body)
+		suite.Equal(http.StatusBadRequest, w.Code, name)
+		suite.Contains(w.Body.String(), `"field":"seed"`, name)
+	}
+
+	// Larger than any state of a 128x128 world.
+	w = suite.do("PUT", seedPath, make([]byte, protocol.MaxEncodedSize(128*128)+1))
+	suite.Equal(http.StatusRequestEntityTooLarge, w.Code)
+
+	// The rejected uploads left the stored state untouched.
+	w = suite.do("GET", seedPath, nil)
+	suite.Equal(valid.Encode(nil), w.Body.Bytes())
+}
+
+// TestModesKeepToTheirOwnEndpoints checks that a single-player game cannot be
+// played on the server, and a multiplayer game's state cannot be overwritten.
+func (suite *APITestSuite) TestModesKeepToTheirOwnEndpoints() {
+	multi := suite.createGameAPI("Multi", 128)
+	suite.Equal(games.ModeMulti, multi.Mode)
+	payload, _ := json.Marshal(games.CreateParams{Name: "Solo", Mode: games.ModeSingle, WorldSize: 128})
+	suite.Require().Equal(http.StatusCreated, suite.do("POST", "/api/games", payload).Code)
+	single := int64(2)
+
+	seed := (&protocol.Output{Speed: 100}).Encode(nil)
+	suite.Equal(http.StatusConflict, suite.do("PUT", fmt.Sprintf("/api/games/%d/seed", multi.ID), seed).Code)
+	suite.Equal(http.StatusConflict, suite.do("GET", fmt.Sprintf("/api/games/%d/seed", multi.ID), nil).Code)
+	suite.Equal(http.StatusConflict, suite.do("POST", fmt.Sprintf("/api/games/%d/save", single), nil).Code)
+	suite.Equal(http.StatusConflict, suite.do("GET", fmt.Sprintf("/games/%d/play", single), nil).Code)
+	suite.Equal(http.StatusNotFound, suite.do("PUT", "/api/games/99/seed", seed).Code)
+
+	payload, _ = json.Marshal(map[string]any{"name": "Bad", "mode": "solo", "worldSize": 128})
+	w := suite.do("POST", "/api/games", payload)
+	suite.Equal(http.StatusBadRequest, w.Code)
+	suite.Contains(w.Body.String(), `"field":"mode"`)
+
+	// The lobby form creates single-player games too.
+	form := url.Values{"name": {"Form Solo"}, "mode": {"single"}, "worldSize": {"256"}}
+	req := httptest.NewRequest("POST", "/games", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	suite.server.Handler.ServeHTTP(w, req)
+	suite.Equal(http.StatusSeeOther, w.Code)
+	rec, err := suite.db.GetGame(context.Background(), 3)
+	suite.Require().NoError(err)
+	suite.Equal("single", rec.Mode)
+}
+
 func TestAPISuite(t *testing.T) {
 	suite.Run(t, new(APITestSuite))
 }

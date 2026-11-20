@@ -232,7 +232,7 @@ func TestSlowClientBackpressure(t *testing.T) {
 	t.Logf("RESULT slow-client: after 1.5s of not reading, drained %d stale messages / %d bytes before catching up",
 		stale, staleBytes)
 
-	// At most maxInFlight (2) in-flight frames may be stale; the pending frame
+	// At most protocol.MaxInFlight (2) in-flight frames may be stale; the pending frame
 	// is always the newest. An unacked queue must never build up.
 	assert.LessOrEqual(t, stale, 4, "a slow client must skip stale frames, not drain a queue of them")
 }

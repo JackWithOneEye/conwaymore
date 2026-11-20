@@ -66,3 +66,14 @@ func ApplyStateUpdate(frame, su []byte) []byte {
 	patched[2] = su[3]
 	return patched
 }
+
+// Coalesce returns the message to deliver in place of pending, a message not
+// yet delivered, once next arrives. next supersedes pending, except that a
+// state update is folded into a pending full frame so that its cells are kept.
+// pending may be nil.
+func Coalesce(pending, next []byte) []byte {
+	if pending != nil && IsStateUpdate(next) && !IsStateUpdate(pending) {
+		return ApplyStateUpdate(pending, next)
+	}
+	return next
+}

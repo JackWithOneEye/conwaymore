@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,12 +27,26 @@ const (
 
 var ValidWorldSizes = []uint{128, 256, 512, 1024, 2048}
 
+// Mode says where a game's simulation runs.
+type Mode string
+
+const (
+	// ModeMulti games run on the server, which streams them to every viewer.
+	ModeMulti Mode = "multi"
+	// ModeSingle games run in the player's browser; the server only stores their state.
+	ModeSingle Mode = "single"
+)
+
+var ValidModes = []Mode{ModeMulti, ModeSingle}
+
 var (
 	ErrNotFound              = database.ErrNotFound
 	ErrMaxGamesReached       = database.ErrMaxGamesReached
 	ErrMaxLoadedGamesReached = errors.New("maximum number of active games reached")
 	ErrGameClosed            = errors.New("game closed")
 	ErrShuttingDown          = errors.New("server is shutting down")
+	ErrSinglePlayer          = errors.New("single-player games run in the browser, not on the server")
+	ErrMultiplayer           = errors.New("multiplayer games run on the server; their state cannot be read or written directly")
 )
 
 type ValidationError struct {
@@ -55,6 +70,7 @@ type ManagerConfig interface {
 
 type CreateParams struct {
 	Name      string `json:"name"`
+	Mode      Mode   `json:"mode,omitempty"` // defaults to ModeMulti
 	WorldSize uint   `json:"worldSize"`
 	SpeedMs   uint16 `json:"speedMs,omitempty"`
 }
@@ -62,6 +78,7 @@ type CreateParams struct {
 type Info struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
+	Mode      Mode   `json:"mode"`
 	WorldSize uint   `json:"worldSize"`
 	Playing   bool   `json:"playing"`
 	Speed     uint32 `json:"speed"`
@@ -78,7 +95,13 @@ type Manager interface {
 	Get(ctx context.Context, id int64) (Game, error)
 	Rename(ctx context.Context, id int64, name string) (Info, error)
 	Delete(ctx context.Context, id int64) error
+	// Save stores the current state of a multiplayer game.
 	Save(ctx context.Context, id int64) error
+	// GetSeed returns the stored state of a single-player game, an encoded protocol.Output.
+	GetSeed(ctx context.Context, id int64) ([]byte, error)
+	// SaveSeed stores the state of a single-player game, an encoded protocol.Output
+	// sent by the browser that runs it.
+	SaveSeed(ctx context.Context, id int64, seed []byte) error
 	Shutdown(ctx context.Context) error
 }
 
@@ -140,10 +163,7 @@ func (s *Subscriber) offer(o []byte) {
 	default:
 	}
 
-	if pending != nil && protocol.IsStateUpdate(o) && !protocol.IsStateUpdate(pending) {
-		o = protocol.ApplyStateUpdate(pending, o)
-	}
-	s.msgs <- o
+	s.msgs <- protocol.Coalesce(pending, o)
 }
 
 type worldSizeConfig uint
@@ -240,6 +260,7 @@ func (r *room) Info() Info {
 	return Info{
 		ID:        r.id,
 		Name:      name,
+		Mode:      ModeMulti,
 		WorldSize: r.worldSize,
 		Playing:   r.eng.Playing(),
 		Speed:     r.eng.Speed(),
@@ -391,6 +412,7 @@ func infoFromRecord(rec *database.GameRecord) Info {
 	return Info{
 		ID:        rec.ID,
 		Name:      rec.Name,
+		Mode:      Mode(rec.Mode),
 		WorldSize: rec.WorldSize,
 		Playing:   playing,
 		Speed:     speed,
@@ -405,6 +427,16 @@ func (m *manager) Create(ctx context.Context, p CreateParams) (Info, error) {
 	name, err := validateName(p.Name)
 	if err != nil {
 		return Info{}, err
+	}
+	mode := p.Mode
+	if mode == "" {
+		mode = ModeMulti
+	}
+	if !slices.Contains(ValidModes, mode) {
+		return Info{}, &ValidationError{
+			Field:   "mode",
+			Message: fmt.Sprintf("mode must be %q or %q", ModeMulti, ModeSingle),
+		}
 	}
 	if !IsValidWorldSize(p.WorldSize) {
 		return Info{}, &ValidationError{
@@ -425,7 +457,7 @@ func (m *manager) Create(ctx context.Context, p CreateParams) (Info, error) {
 		seed = out.Encode(nil)
 	}
 
-	rec, err := m.db.CreateGame(ctx, name, p.WorldSize, seed, m.maxGames)
+	rec, err := m.db.CreateGame(ctx, name, string(mode), p.WorldSize, seed, m.maxGames)
 	if err != nil {
 		return Info{}, err
 	}
@@ -509,6 +541,10 @@ func (m *manager) Get(ctx context.Context, id int64) (Game, error) {
 		if err != nil {
 			m.mu.Unlock()
 			return nil, err
+		}
+		if Mode(rec.Mode) == ModeSingle {
+			m.mu.Unlock()
+			return nil, ErrSinglePlayer
 		}
 
 		r := newRoom(rec, m.idleTimeout, m.unloadIfIdle)
@@ -669,8 +705,62 @@ func (m *manager) Save(ctx context.Context, id int64) error {
 		if err != nil {
 			return err
 		}
+		if Mode(rec.Mode) == ModeSingle {
+			return ErrSinglePlayer
+		}
 		return m.db.SaveGameSeed(ctx, id, rec.Seed, now)
 	}
+}
+
+// getSingle returns the record of a single-player game. These are never loaded
+// into rooms, so the database always holds their latest state.
+func (m *manager) getSingle(ctx context.Context, id int64) (*database.GameRecord, error) {
+	rec, err := m.db.GetGame(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if Mode(rec.Mode) != ModeSingle {
+		return nil, ErrMultiplayer
+	}
+	return rec, nil
+}
+
+func (m *manager) GetSeed(ctx context.Context, id int64) ([]byte, error) {
+	rec, err := m.getSingle(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return rec.Seed, nil
+}
+
+func (m *manager) SaveSeed(ctx context.Context, id int64, seed []byte) error {
+	rec, err := m.getSingle(ctx, id)
+	if err != nil {
+		return err
+	}
+	seed, err = normaliseSeed(seed, rec.WorldSize)
+	if err != nil {
+		return err
+	}
+	return m.db.SaveGameSeed(ctx, id, seed, time.Now().UnixMilli())
+}
+
+// normaliseSeed checks that seed is an Output of a world of the given size and
+// re-encodes it, so that only well-formed state is stored.
+func normaliseSeed(seed []byte, worldSize uint) ([]byte, error) {
+	var o protocol.Output
+	if err := o.Decode(seed); err != nil {
+		return nil, &ValidationError{Field: "seed", Message: fmt.Sprintf("invalid seed: %s", err)}
+	}
+	for _, c := range o.Cells {
+		if uint(c.X) >= worldSize || uint(c.Y) >= worldSize {
+			return nil, &ValidationError{
+				Field:   "seed",
+				Message: fmt.Sprintf("cell (%d, %d) lies outside the %dx%d world", c.X, c.Y, worldSize, worldSize),
+			}
+		}
+	}
+	return o.Encode(nil), nil
 }
 
 func (m *manager) Shutdown(ctx context.Context) error {

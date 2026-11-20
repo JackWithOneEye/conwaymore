@@ -1,9 +1,9 @@
 /** @import { CanvasDragState, Globals, PatternDragState } from './types/ui' */
-/** @import { CanvasWorkerEvent, CanvasWorkerInitMessage, CanvasWorkerMessage } from './types/worker' */
+/** @import { CanvasWorkerEvent, CanvasWorkerInitMessage, CanvasWorkerMessage, EngineWorkerEvent, EngineWorkerInitMessage, EngineWorkerMessage } from './types/worker' */
 import { getElementByIdOrDie, showError, UserPreferences } from './helpers';
 import { getPatterns } from './patterns';
 import { computed, effect, reactive, signal } from './signals';
-import { CanvasWorkerEventType, CanvasWorkerMessageType, Command } from './types/enums';
+import { CanvasWorkerEventType, CanvasWorkerMessageType, Command, EngineWorkerEventType, EngineWorkerMessageType } from './types/enums';
 
 // Constants for better maintainability
 const MAX_ZOOM = 100;
@@ -60,13 +60,21 @@ try {
 }
 
 /** @type {Globals} */
-const { GameID, WorldSize, WSPath } = globals;
+const { GameID, Mode, WorldSize, WSPath } = globals;
 const Patterns = getPatterns();
 
 const canvasWorker = new Worker('/assets/js/worker.js', { type: 'module' });
 
+// A single-player game runs in its own worker, so that slow generations never hold up drawing.
+const engineWorker = Mode === 'single' ? new Worker('/assets/js/engine-worker.js', { type: 'module' }) : null;
+engineWorker?.addEventListener('error', (e) => {
+  console.error(e);
+  showError('The simulation stopped');
+});
+
 window.addEventListener('pagehide', () => {
   canvasWorker.terminate();
+  engineWorker?.terminate();
 });
 window.addEventListener('pageshow', (e) => {
   if (e.persisted) {
@@ -131,7 +139,11 @@ const App = {
     speedArcLit: getElementByIdOrDie('speed-arc-lit'),
     speedPointer: getElementByIdOrDie('speed-pointer'),
   },
-  init() {
+  /**
+   * Start the page once the workers are ready.
+   * @param {MessagePort | undefined} enginePort - for a single-player game, the port on which the canvas worker plays it
+   */
+  init(enginePort) {
     // Load user preferences
     const prefs = UserPreferences.load();
 
@@ -146,16 +158,27 @@ const App = {
     }
 
     App.$.save.removeAttribute('disabled');
-    App.$.save.addEventListener('htmx:afterRequest', (e) => {
-      if (!(/** @type {CustomEvent} */ (e)).detail.successful) {
-        showError('Saving failed');
-        return;
-      }
-      App.$.saveLabel.textContent = 'Saved';
-      setTimeout(() => {
-        App.$.saveLabel.textContent = 'Save';
-      }, 1500);
-    });
+    if (engineWorker) {
+      // The game runs in the engine worker, so ask it for the state and upload that.
+      App.$.save.addEventListener('click', () => engineWorker.postMessage(
+        /** @type {EngineWorkerMessage} */({ type: EngineWorkerMessageType.Snapshot })
+      ));
+      /** @param {MessageEvent<EngineWorkerEvent>} e */
+      engineWorker.onmessage = (e) => {
+        if (e.data.type !== EngineWorkerEventType.Snapshot) {
+          return;
+        }
+        fetch(`/api/games/${GameID}/seed`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: e.data.seed
+        }).then((res) => App.saveDone(res.ok), () => App.saveDone(false));
+      };
+    } else {
+      App.$.save.addEventListener('htmx:afterRequest', (e) => {
+        App.saveDone(/** @type {CustomEvent} */ (e).detail.successful);
+      });
+    }
 
     App.$.themeToggle.addEventListener('click', () => {
       const theme = App.theme.state() === 'dark' ? 'light' : 'dark';
@@ -525,8 +548,9 @@ const App = {
       height: App.$.canvasWrapper.offsetHeight,
       width: App.$.canvasWrapper.offsetWidth,
       worldSize: WorldSize,
-      wsPath: WSPath
-    }), [osCanvas]);
+      wsPath: WSPath,
+      enginePort
+    }), enginePort ? [osCanvas, enginePort] : [osCanvas]);
 
     effect(() => {
       const attr = cellColourAttr();
@@ -601,6 +625,21 @@ const App = {
       App.$.speedLabel.textContent = `${speed.toFixed(0)} ms`;
       App.speed.renderDial();
     });
+  },
+
+  /**
+   * Show the outcome of a save
+   * @param {boolean} ok
+   */
+  saveDone(ok) {
+    if (!ok) {
+      showError('Saving failed');
+      return;
+    }
+    App.$.saveLabel.textContent = 'Saved';
+    setTimeout(() => {
+      App.$.saveLabel.textContent = 'Save';
+    }, 1500);
   },
 
   // Pinch zoom support for mobile
@@ -1032,4 +1071,41 @@ const App = {
   }
 };
 
-canvasWorker.addEventListener('message', App.init, { once: true });
+/**
+ * Resolve once a worker reports that it is ready, with its first message.
+ * @param {Worker} worker
+ * @returns {Promise<void>}
+ */
+function workerReady(worker) {
+  return new Promise((resolve) => worker.addEventListener('message', () => resolve(), { once: true }));
+}
+
+/**
+ * Start a single-player game in the engine worker from its saved state, and connect a port to it
+ * for the canvas worker. Multiplayer games run on the server instead.
+ * @returns {Promise<MessagePort | undefined>}
+ */
+async function startEngine() {
+  if (!engineWorker) {
+    return undefined;
+  }
+  const [res] = await Promise.all([fetch(`/api/games/${GameID}/seed`, { cache: 'no-store' }), workerReady(engineWorker)]);
+  if (!res.ok) {
+    throw new Error(`loading the game failed with status ${res.status}`);
+  }
+  const seed = new Uint8Array(await res.arrayBuffer());
+  const { port1, port2 } = new MessageChannel();
+  engineWorker.postMessage(/** @type {EngineWorkerInitMessage} */({
+    type: EngineWorkerMessageType.Init,
+    worldSize: WorldSize,
+    seed,
+    port: port1
+  }), [port1, seed.buffer]);
+  return port2;
+}
+
+// Start the engine while the canvas worker starts, and start the page once both are ready.
+Promise.all([startEngine(), workerReady(canvasWorker)]).then(([enginePort]) => App.init(enginePort), (error) => {
+  console.error(error);
+  showError('Could not load this game');
+});
