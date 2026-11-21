@@ -82,12 +82,13 @@ type engine struct {
 	stale      atomic.Bool
 	lifecycle  atomic.Uint32 // lifecycle
 
-	// speed is the tick period in ms. A change is signalled on speedChanged, a
-	// one-slot channel: the ticker loop resets the ticker to the current speed
-	// as soon as it takes the signal, so a change applies at once, and a change
-	// made while a signal is already pending is picked up with it.
-	speed        atomic.Uint32
-	speedChanged chan struct{}
+	// speed is the tick period in ms. A change of speed or play state is
+	// signalled on timingChanged, a one-slot channel: the ticker loop resets
+	// the ticker to the current speed, or stops it while paused, as soon as it
+	// takes the signal, so a change applies at once, and a change made while a
+	// signal is already pending is picked up with it.
+	speed         atomic.Uint32
+	timingChanged chan struct{}
 
 	output       protocol.Output
 	encodeBuffer []byte
@@ -104,11 +105,11 @@ type engine struct {
 func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) (Engine, error) {
 	ws := cfg.WorldSize()
 	e := &engine{
-		ctx:          ctx,
-		conway:       conway.NewConway(cfg),
-		output:       protocol.Output{Cells: make([]protocol.Cell, 0, ws/4)},
-		outputChan:   make(chan []byte, 2),
-		speedChanged: make(chan struct{}, 1),
+		ctx:           ctx,
+		conway:        conway.NewConway(cfg),
+		output:        protocol.Output{Cells: make([]protocol.Cell, 0, ws/4)},
+		outputChan:    make(chan []byte, 2),
+		timingChanged: make(chan struct{}, 1),
 	}
 
 	e.speed.Store(100)
@@ -155,6 +156,14 @@ func (e *engine) Start() {
 	}
 
 	ticker := time.NewTicker(e.speedAsDuration())
+	resetTicker := func() {
+		if e.Playing() {
+			ticker.Reset(e.speedAsDuration())
+		} else {
+			ticker.Stop() // a paused game has nothing to compute
+		}
+	}
+	resetTicker()
 	defer func() {
 		ticker.Stop()
 		e.outputMu.Lock()
@@ -167,8 +176,8 @@ func (e *engine) Start() {
 		select {
 		case <-e.ctx.Done():
 			return
-		case <-e.speedChanged:
-			ticker.Reset(e.speedAsDuration())
+		case <-e.timingChanged:
+			resetTicker()
 		case <-ticker.C:
 			start := time.Now()
 			if e.Playing() {
@@ -309,10 +318,12 @@ func (e *engine) handleCommand(c *protocol.Command) error {
 		if !e.play.CompareAndSwap(uint32(playing), uint32(paused)) {
 			return errors.New("already paused")
 		}
+		e.signalTiming()
 	case protocol.Play:
 		if !e.play.CompareAndSwap(uint32(paused), uint32(playing)) {
 			return errors.New("already playing")
 		}
+		e.signalTiming()
 	case protocol.Randomise:
 		e.mutex.Lock()
 		e.conway.Randomise()
@@ -349,12 +360,16 @@ func (e *engine) handleSetSpeed(sp *protocol.SetSpeed) error {
 	if new == old {
 		return errors.New("speed has not changed")
 	}
-	select {
-	case e.speedChanged <- struct{}{}:
-	default: // a change is already signalled; the ticker loop reads the newest speed
-	}
-
+	e.signalTiming()
 	return nil
+}
+
+// signalTiming tells the ticker loop that the speed or play state changed.
+func (e *engine) signalTiming() {
+	select {
+	case e.timingChanged <- struct{}{}:
+	default: // a change is already signalled; the ticker loop reads the newest state
+	}
 }
 
 func (e *engine) setSeed(seed []byte) error {
