@@ -15,7 +15,7 @@ exclude_dir = [
   "node_modules",
   "out",
   "cmd/terminal",
-  "cmd/web/assets",
+  "internal/web/assets",
   "internal/tui",
 ]
 exclude_file = []

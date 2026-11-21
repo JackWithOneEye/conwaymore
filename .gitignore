@@ -32,8 +32,8 @@ tmp/
 # Build outputs
 bin/
 *templ.go
-cmd/web/assets/js
-cmd/web/assets/css
+internal/web/assets/js
+internal/web/assets/css
 
 # Misc.
 node_modules/

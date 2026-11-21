@@ -20,19 +20,19 @@ func main() {
 	buildOpts := api.BuildOptions{
 		EntryPointsAdvanced: []api.EntryPoint{
 			{
-				InputPath:  "cmd/web/frontend/index.js",
+				InputPath:  "internal/web/frontend/index.js",
 				OutputPath: "index",
 			},
 			{
-				InputPath:  "cmd/web/frontend/vendor.js",
+				InputPath:  "internal/web/frontend/vendor.js",
 				OutputPath: "vendor",
 			},
 			{
-				InputPath:  "cmd/web/frontend/worker/worker.js",
+				InputPath:  "internal/web/frontend/worker/worker.js",
 				OutputPath: "worker",
 			},
 			{
-				InputPath:  "cmd/web/frontend/worker/engine-worker.js",
+				InputPath:  "internal/web/frontend/worker/engine-worker.js",
 				OutputPath: "engine-worker",
 			},
 			{
@@ -41,7 +41,7 @@ func main() {
 			},
 		},
 		External: []string{"./wasm_exec.js"},
-		Outdir:   "cmd/web/assets/js",
+		Outdir:   "internal/web/assets/js",
 		Bundle:   true,
 		Platform: api.PlatformBrowser,
 		Loader: map[string]api.Loader{

@@ -17,13 +17,13 @@ import (
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 )
 
-// Messages from the page (EngineWorkerMessageType in cmd/web/frontend/types/enums.js).
+// Messages from the page (EngineWorkerMessageType in internal/web/frontend/types/enums.js).
 const (
 	msgInit = iota
 	msgSnapshot
 )
 
-// Events to the page (EngineWorkerEventType in cmd/web/frontend/types/enums.js).
+// Events to the page (EngineWorkerEventType in internal/web/frontend/types/enums.js).
 const (
 	evtReady = iota
 	evtSnapshot

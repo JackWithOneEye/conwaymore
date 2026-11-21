@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JackWithOneEye/conwaymore/cmd/web"
 	"github.com/JackWithOneEye/conwaymore/internal/games"
 	"github.com/JackWithOneEye/conwaymore/internal/livereload"
 	"github.com/JackWithOneEye/conwaymore/internal/patterns"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
+	"github.com/JackWithOneEye/conwaymore/internal/web"
 	"github.com/a-h/templ"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -58,7 +58,7 @@ func (s *server) registerRoutes() http.Handler {
 		}
 		c.Next()
 	})
-	assets.Static("/", "./cmd/web/assets")
+	assets.Static("/", "./internal/web/assets")
 	r.GET("/_livereload", livereload.Handler)
 
 	// HTML lobby and game pages

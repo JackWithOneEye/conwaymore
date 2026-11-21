@@ -9,13 +9,13 @@
 - `PATH="$(go env GOROOT)/lib/wasm:$PATH" GOOS=js GOARCH=wasm go test ./cmd/wasmengine/...` - Run the engine worker tests in WASM under Node, the browser workers' single-threaded runtime (`*_js_test.go` only run there)
 - `make terminal` - Run terminal client
 - `go run cmd/api/main.go` - Run API server
-- `bunx tailwindcss -i cmd/web/frontend/input.css -o cmd/web/assets/css/output.css` - Build CSS
+- `bunx tailwindcss -i internal/web/frontend/input.css -o internal/web/assets/css/output.css` - Build CSS
 - **Use bun instead of npm** for package management and running commands
 
 ## Architecture
 - **Conway's Game of Life implementation** with real-time WebSocket communication
-- **cmd/**: Entry points - api (server), terminal (TUI client), wasm (browser canvas worker), wasmengine (browser engine worker for single-player games), web (frontend), build (bundler)
-- **internal/**: Core modules - engine (game logic), server (HTTP/WS), conway (game rules), database (SQLite), tui (terminal UI), patterns (game patterns), protocol (message format)
+- **cmd/**: Entry points - api (server), terminal (TUI client), wasm (browser canvas worker), wasmengine (browser engine worker for single-player games), build (bundler)
+- **internal/**: Core modules - web (templ pages, frontend sources and built assets), engine (game logic), server (HTTP/WS), conway (game rules), database (SQLite), tui (terminal UI), patterns (game patterns), protocol (message format)
 - **Database**: SQLite for persistence (seed storage)
 - **Frontend**: HTMX + Templ templates + WASM + Tailwind CSS
 
@@ -28,7 +28,7 @@
 - **Client -> server**: `Command`, `SetCells`, `SetSpeed`, `FrameAck` (see `internal/protocol/client_message.go`)
 - **Server -> client**: `Output` (full frame) and `StateUpdate` (0xff marker + playing + speed, 4 bytes, for changes that leave cells untouched, e.g. speed changes)
 - **Frame acks**: every client acks every received message. The server and the engine worker keep at most `protocol.MaxInFlight` (2) unacked messages per client; while delivery is in progress, the pending message is *replaced* by the newest one (state updates are folded into a pending frame's header via `protocol.ApplyStateUpdate`)
-- **Speed slider** (web): debounced (`SPEED_SEND_DEBOUNCE_MS` in `cmd/web/frontend/index.js`) so drags don't flood commands
+- **Speed slider** (web): debounced (`SPEED_SEND_DEBOUNCE_MS` in `internal/web/frontend/index.js`) so drags don't flood commands
 
 ## Code Style
 - **Imports**: Grouped (stdlib, external, internal) with `github.com/JackWithOneEye/conwaymore/internal/` prefix
