@@ -57,7 +57,12 @@ func TestGameRunsFromSeedAndSnapshotsIt(t *testing.T) {
 	require.Contains(t, cells, [2]uint16{127, 11}, "the blinker wraps across the left edge")
 	require.Contains(t, cells, [2]uint16{1, 11})
 	require.Equal(t, uint16(1), cells[[2]uint16{0, 11}].Age, "the centre cell survives and ages")
-	require.Equal(t, uint32(0xffffff), cells[[2]uint16{1, 11}].Colour, "born cells mix red, green, and blue parents")
+	// Each parent passes on one channel, in a random order, so from a red, a
+	// green, and a blue parent every channel is either full or empty.
+	born := cells[[2]uint16{1, 11}].Colour
+	for _, channel := range []uint32{0xff0000, 0x00ff00, 0x0000ff} {
+		require.Contains(t, []uint32{0, channel}, born&channel, "born cells take their channels from their parents")
+	}
 
 	require.NoError(t, l.Submit((&protocol.SetSpeed{Speed: 40}).Encode()))
 	b := <-l.Frames()

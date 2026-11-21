@@ -43,6 +43,11 @@ type conway struct {
 	colour []uint32
 	age    []uint16
 	count  int
+
+	// rng is a wyrand state that picks which parent passes on which colour
+	// channel. Births need one random number each, and the global
+	// math/rand/v2 functions cost several times more than the mix itself.
+	rng uint64
 }
 
 func NewConway(cfg ConwayConfig) Conway {
@@ -65,6 +70,7 @@ func NewConway(cfg ConwayConfig) Conway {
 		next:        make([]uint64, axisLength*wordsPerRow),
 		colour:      make([]uint32, axisLength*axisLength),
 		age:         make([]uint16, axisLength*axisLength),
+		rng:         rand.Uint64(),
 	}
 }
 
@@ -199,8 +205,12 @@ func window(left, mid, right uint64, bit, top uint) uint {
 	return uint(west | (mid>>bit&1)<<1 | east<<2)
 }
 
-// parentColour mixes the colours of the three alive neighbours of (x, y), in
-// row order: red from the first, green from the second, blue from the third.
+// parentOrders are the orders in which three parents can pass on red,
+// green, and blue.
+var parentOrders = [6][3]uint8{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+
+// parentColour mixes the colours of the three alive neighbours of (x, y): each
+// parent passes on one of red, green, and blue, in a random order.
 // neighbours holds the alive bits around the cell (see window) for the rows
 // above, at, and below it.
 func (c *conway) parentColour(x, y int, neighbours [3]uint) uint32 {
@@ -215,7 +225,15 @@ func (c *conway) parentColour(x, y int, neighbours [3]uint) uint32 {
 			p++
 		}
 	}
-	return (parents[0] & 0xff0000) | (parents[1] & 0x00ff00) | (parents[2] & 0x0000ff)
+	o := parentOrders[c.random()%6]
+	return (parents[o[0]] & 0xff0000) | (parents[o[1]] & 0x00ff00) | (parents[o[2]] & 0x0000ff)
+}
+
+// random returns the next number of the board's wyrand sequence.
+func (c *conway) random() uint32 {
+	c.rng += 0xa0761d6478bd642f
+	hi, lo := bits.Mul64(c.rng, c.rng^0xe7037ed1a0b428db)
+	return uint32(hi ^ lo)
 }
 
 func (c *conway) Randomise() {

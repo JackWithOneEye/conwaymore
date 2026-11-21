@@ -1,6 +1,7 @@
 package conway
 
 import (
+	"maps"
 	"slices"
 	"testing"
 
@@ -11,21 +12,64 @@ type config struct{ worldSize uint }
 
 func (c config) WorldSize() uint { return c.worldSize }
 
+// mixes returns the colours a cell born from parents may get: each parent
+// passes on one of red, green, and blue.
+func mixes(parents []uint32) []uint32 {
+	var out []uint32
+	for _, o := range [6][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		out = append(out, parents[o[0]]&0xff0000|parents[o[1]]&0x00ff00|parents[o[2]]&0x0000ff)
+	}
+	return out
+}
+
 func TestNextGenMixesParentColoursAndAgesSurvivors(t *testing.T) {
 	c := NewConway(config{worldSize: 8})
-	// Vertical blinker; each new cell's parents are, in neighbour order, the top, middle and bottom cell.
-	c.SetCell(1, 0, 0x123456, 0)
-	c.SetCell(1, 1, 0xabcdef, 5)
-	c.SetCell(1, 2, 0x987654, 0)
+	// Vertical blinker; each new cell's parents are the top, middle and bottom cell.
+	parents := []uint32{0x123456, 0xabcdef, 0x987654}
+	c.SetCell(1, 0, parents[0], 0)
+	c.SetCell(1, 1, parents[1], 5)
+	c.SetCell(1, 2, parents[2], 0)
 
 	c.NextGen()
 
-	assert.ElementsMatch(t, []Cell{
-		{X: 0, Y: 1, Colour: 0x12cd54, Age: 0},
-		{X: 1, Y: 1, Colour: 0xabcdef, Age: 6},
-		{X: 2, Y: 1, Colour: 0x12cd54, Age: 0},
-	}, slices.Collect(c.Cells()))
+	cells := slices.Collect(c.Cells())
+	assert.Len(t, cells, 3)
 	assert.Equal(t, uint(3), c.CellsCount())
+	for _, cell := range cells {
+		switch cell.X {
+		case 1:
+			assert.Equal(t, Cell{X: 1, Y: 1, Colour: 0xabcdef, Age: 6}, cell, "the centre survives and ages")
+		default:
+			assert.Contains(t, []uint16{0, 2}, cell.X)
+			assert.Equal(t, uint16(1), cell.Y)
+			assert.Equal(t, uint16(0), cell.Age)
+			assert.Contains(t, mixes(parents), cell.Colour)
+		}
+	}
+}
+
+// TestBirthsUseEveryParentOrder checks that the order in which parents pass on
+// red, green, and blue is random: over many births, every order occurs.
+func TestBirthsUseEveryParentOrder(t *testing.T) {
+	c := NewConway(config{worldSize: 8})
+	parents := []uint32{0x112233, 0x445566, 0x778899}
+	seen := map[uint32]int{}
+	for range 600 {
+		c.Clear()
+		for i, p := range parents {
+			c.SetCell(1, uint16(i), p, 0)
+		}
+		c.NextGen()
+		for cell := range c.Cells() {
+			if cell.X == 0 {
+				seen[cell.Colour]++
+			}
+		}
+	}
+	assert.ElementsMatch(t, mixes(parents), slices.Collect(maps.Keys(seen)))
+	for colour, n := range seen {
+		assert.Greater(t, n, 50, "order for %06x is rare", colour) // about 100 each
+	}
 }
 
 func TestNextGenWrapsAroundWorldEdges(t *testing.T) {
@@ -54,10 +98,15 @@ type reference struct {
 	alive  []bool
 	colour []uint32
 	age    []uint16
+	born   map[int][]uint32
 }
 
+// nextGen computes the next generation. A born cell's colour depends on a
+// random order, so it records the colours each may get in born, and the caller
+// adopts the implementation's choice once it has checked it.
 func (r *reference) nextGen() {
 	n := r.n
+	r.born = map[int][]uint32{}
 	alive := make([]bool, n*n)
 	for y := range n {
 		for x := range n {
@@ -78,9 +127,7 @@ func (r *reference) nextGen() {
 			case !r.alive[i] && len(parents) == 3:
 				alive[i] = true
 				r.age[i] = 0
-				defer func() { // after every neighbour has read the old colours
-					r.colour[i] = parents[0]&0xff0000 | parents[1]&0x00ff00 | parents[2]&0x0000ff
-				}()
+				r.born[i] = mixes(parents)
 			}
 		}
 	}
@@ -128,13 +175,22 @@ func TestNextGenMatchesReference(t *testing.T) {
 			c.NextGen()
 			ref.nextGen()
 
+			got := slices.Collect(c.Cells())
+			for _, cell := range got {
+				i := int(cell.Y)*n + int(cell.X)
+				if options, ok := ref.born[i]; ok {
+					if !assert.Contains(t, options, cell.Colour, "world %d, generation %d, cell %v", n, gen, cell) {
+						return
+					}
+					ref.colour[i] = cell.Colour
+				}
+			}
 			var want []Cell
 			for i, a := range ref.alive {
 				if a {
 					want = append(want, Cell{X: uint16(i % n), Y: uint16(i / n), Colour: ref.colour[i], Age: ref.age[i]})
 				}
 			}
-			got := slices.Collect(c.Cells())
 			if !assert.Equal(t, want, got, "world %d, generation %d", n, gen) {
 				return
 			}
