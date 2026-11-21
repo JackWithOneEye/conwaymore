@@ -79,38 +79,29 @@ func main() {
 	serve(game, <-started)
 }
 
-// serve plays g with the client on port, with the server's flow control: the
-// client acks every message, at most protocol.MaxInFlight messages wait for
-// an ack, and meanwhile g coalesces newer ones. So the engine never waits for
-// the client, and the client never falls behind the engine. serve returns once
-// g is closed.
+// serve plays g with the client on port, with the server's flow control (see
+// protocol.Window): the client acks every message, at most
+// protocol.MaxInFlight messages wait for an ack, and meanwhile g coalesces
+// newer ones. So the engine never waits for the client, and the client never
+// falls behind the engine. serve returns once g is closed.
 func serve(g *local.Game, port *jsport.Port) {
-	credits := make(chan struct{}, protocol.MaxInFlight)
-	for range protocol.MaxInFlight {
-		credits <- struct{}{}
-	}
-
-	go func() {
-		for b := range port.Messages() {
+	var window protocol.Window
+	for {
+		select {
+		case b, ok := <-window.Gate(g.Frames()):
+			if !ok {
+				return
+			}
+			port.Post(b)
+			window.Sent()
+		case b := <-port.Messages():
 			if protocol.IsFrameAck(b) {
-				select {
-				case credits <- struct{}{}:
-				default: // an ack for nothing in flight
-				}
+				window.Acked()
 				continue
 			}
 			if err := g.Submit(b); err != nil {
 				log.Printf("client message produced an error: %s", err)
 			}
 		}
-	}()
-
-	for {
-		<-credits
-		b, ok := <-g.Frames()
-		if !ok {
-			return
-		}
-		port.Post(b)
 	}
 }

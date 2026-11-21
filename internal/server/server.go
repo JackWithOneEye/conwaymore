@@ -511,13 +511,8 @@ func (s *server) playHandler(c *gin.Context) {
 		wg.Wait()
 	}()
 
-	inFlight := 0
+	var window protocol.Window
 	for {
-		var outbox <-chan []byte
-		if inFlight < protocol.MaxInFlight {
-			outbox = sub.Frames()
-		}
-
 		select {
 		case <-wsCtx.Done():
 			return
@@ -528,7 +523,7 @@ func (s *server) playHandler(c *gin.Context) {
 				_ = socket.Close(websocket.StatusGoingAway, "server shutting down")
 			}
 			return
-		case payload := <-outbox:
+		case payload := <-window.Gate(sub.Frames()):
 			err := socket.Write(wsCtx, websocket.MessageBinary, payload)
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure || websocket.CloseStatus(err) == websocket.StatusGoingAway {
 				return
@@ -537,15 +532,13 @@ func (s *server) playHandler(c *gin.Context) {
 				log.Printf("could not write to websocket: %s", err)
 				return
 			}
-			inFlight++
+			window.Sent()
 		case msg, ok := <-readerMsgChan:
 			if !ok {
 				return
 			}
 			if protocol.IsFrameAck(msg) {
-				if inFlight > 0 {
-					inFlight--
-				}
+				window.Acked()
 				continue
 			}
 			if err := game.Submit(msg); err != nil {

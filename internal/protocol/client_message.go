@@ -114,6 +114,33 @@ type FrameAck struct{}
 // client falls behind by at most MaxInFlight messages plus that one.
 const MaxInFlight = 2
 
+// Window applies the frame-ack flow control to one client's delivery loop:
+// at most MaxInFlight sent messages wait for an ack. The zero value is ready.
+type Window struct {
+	inFlight int
+}
+
+// Gate returns frames while another message may be sent and nil otherwise,
+// so that a select receiving from it waits for an ack instead.
+func (w *Window) Gate(frames <-chan []byte) <-chan []byte {
+	if w.inFlight < MaxInFlight {
+		return frames
+	}
+	return nil
+}
+
+// Sent records a message sent to the client.
+func (w *Window) Sent() {
+	w.inFlight++
+}
+
+// Acked records an ack from the client; an ack for nothing in flight is ignored.
+func (w *Window) Acked() {
+	if w.inFlight > 0 {
+		w.inFlight--
+	}
+}
+
 func (f *FrameAck) Encode() []byte {
 	return []byte{byte(frameAck)}
 }
