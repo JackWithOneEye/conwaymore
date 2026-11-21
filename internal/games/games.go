@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/JackWithOneEye/conwaymore/internal/api"
 	"github.com/JackWithOneEye/conwaymore/internal/database"
 	"github.com/JackWithOneEye/conwaymore/internal/engine"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
@@ -28,13 +29,11 @@ const (
 var ValidWorldSizes = []uint{128, 256, 512, 1024, 2048}
 
 // Mode says where a game's simulation runs.
-type Mode string
+type Mode = api.Mode
 
 const (
-	// ModeMulti games run on the server, which streams them to every viewer.
-	ModeMulti Mode = "multi"
-	// ModeSingle games run in the player's browser; the server only stores their state.
-	ModeSingle Mode = "single"
+	ModeMulti  = api.ModeMulti
+	ModeSingle = api.ModeSingle
 )
 
 var ValidModes = []Mode{ModeMulti, ModeSingle}
@@ -75,18 +74,7 @@ type CreateParams struct {
 	SpeedMs   uint16 `json:"speedMs,omitempty"`
 }
 
-type Info struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	Mode      Mode   `json:"mode"`
-	WorldSize uint   `json:"worldSize"`
-	Playing   bool   `json:"playing"`
-	Speed     uint32 `json:"speed"`
-	Viewers   int    `json:"viewers"`
-	Loaded    bool   `json:"loaded"`
-	CreatedAt int64  `json:"createdAt"`
-	SavedAt   *int64 `json:"savedAt"`
-}
+type Info = api.GameInfo
 
 type Manager interface {
 	Create(ctx context.Context, p CreateParams) (Info, error)

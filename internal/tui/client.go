@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/JackWithOneEye/conwaymore/internal/games"
+	"github.com/JackWithOneEye/conwaymore/internal/api"
 	"github.com/JackWithOneEye/conwaymore/internal/protocol"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/coder/websocket"
@@ -134,7 +134,7 @@ func saveGame(host string, gameID int64) tea.Cmd {
 	}
 }
 
-func resolveGame(host string, gameID int64) (*games.Info, error) {
+func resolveGame(host string, gameID int64) (*api.GameInfo, error) {
 	if gameID > 0 {
 		u := url.URL{Scheme: "http", Host: host, Path: fmt.Sprintf("/api/games/%d", gameID)}
 		resp, err := http.DefaultClient.Get(u.String())
@@ -152,11 +152,11 @@ func resolveGame(host string, gameID int64) (*games.Info, error) {
 		if err != nil {
 			return nil, err
 		}
-		var info games.Info
+		var info api.GameInfo
 		if err := json.Unmarshal(d, &info); err != nil {
 			return nil, err
 		}
-		if info.Mode == games.ModeSingle {
+		if info.Mode == api.ModeSingle {
 			return nil, fmt.Errorf("game #%d is a single-player game, which only runs in the browser", gameID)
 		}
 		return &info, nil
@@ -175,12 +175,12 @@ func resolveGame(host string, gameID int64) (*games.Info, error) {
 	if err != nil {
 		return nil, err
 	}
-	var list []games.Info
+	var list []api.GameInfo
 	if err := json.Unmarshal(d, &list); err != nil {
 		return nil, err
 	}
 	for i := range list {
-		if list[i].Mode != games.ModeSingle {
+		if list[i].Mode != api.ModeSingle {
 			return &list[i], nil
 		}
 	}
