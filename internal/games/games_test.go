@@ -323,3 +323,60 @@ func TestLoadingAGameDoesNotBlockOthers(t *testing.T) {
 	close(bdb.release)
 	require.NoError(t, <-slowLoaded)
 }
+
+// TestUnwatchedRoomSkipsFramesButSavesCurrentState checks that a playing room
+// without viewers stops encoding frames, yet saving stores its current state
+// and a new viewer receives that state.
+func TestUnwatchedRoomSkipsFramesButSavesCurrentState(t *testing.T) {
+	mgr, db := newTestManager(t, 10, 10, 0)
+	defer mgr.Shutdown(context.Background())
+	ctx := context.Background()
+
+	info, err := mgr.Create(ctx, CreateParams{Name: "Unwatched", WorldSize: 128})
+	require.NoError(t, err)
+	// A blinker playing at 1 ms; its centre cell ages by one each generation.
+	seed := (&protocol.Output{
+		Cells:      []protocol.Cell{{X: 5, Y: 4, Colour: 1}, {X: 5, Y: 5, Colour: 1}, {X: 5, Y: 6, Colour: 1}},
+		CellsCount: 3,
+		Playing:    true,
+		Speed:      1,
+	}).Encode(nil)
+	require.NoError(t, db.SaveGameSeed(ctx, info.ID, seed, 1))
+
+	g, err := mgr.Get(ctx, info.ID)
+	require.NoError(t, err)
+	r := g.(*room)
+	centreAge := func(frame []byte) uint16 {
+		var o protocol.Output
+		require.NoError(t, o.Decode(frame))
+		for _, c := range o.Cells {
+			if c.X == 5 && c.Y == 5 {
+				return c.Age
+			}
+		}
+		t.Fatal("the centre cell died")
+		return 0
+	}
+
+	broadcast := r.lastOutput.Load().([]byte)
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, broadcast, r.lastOutput.Load(), "an unwatched room broadcast a frame")
+
+	require.NoError(t, mgr.Save(ctx, info.ID))
+	rec, err := db.GetGame(ctx, info.ID)
+	require.NoError(t, err)
+	saved := centreAge(rec.Seed)
+	require.Greater(t, saved, centreAge(broadcast)+10, "the save lags behind the game")
+
+	sub, err := g.Subscribe()
+	require.NoError(t, err)
+	defer g.Unsubscribe(sub)
+	require.Eventually(t, func() bool {
+		select {
+		case f := <-sub.Frames():
+			return !protocol.IsStateUpdate(f) && centreAge(f) >= saved
+		default:
+			return false
+		}
+	}, 2*time.Second, 5*time.Millisecond, "the new viewer never caught up")
+}

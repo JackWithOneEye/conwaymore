@@ -210,6 +210,7 @@ func newRoom(rec *database.GameRecord, idleTimeout time.Duration, onIdle func(*r
 	// The engine emits its initial state on creation. Store it before starting
 	// so every subscriber and save call immediately observes valid state.
 	r.lastOutput.Store(<-eng.Output())
+	eng.Observe(false) // until the first subscriber
 
 	go r.runBroadcast()
 	go eng.Start()
@@ -284,6 +285,9 @@ func (r *room) Subscribe() (*Subscriber, error) {
 		sub.offer(lo.([]byte))
 	}
 	r.listeners[sub] = struct{}{}
+	// If the room ran unwatched, the engine now emits the current frame,
+	// which supersedes the stale one just offered.
+	r.eng.Observe(true)
 	return sub, nil
 }
 
@@ -295,6 +299,7 @@ func (r *room) Unsubscribe(sub *Subscriber) {
 	}
 	delete(r.listeners, sub)
 	if len(r.listeners) == 0 && !r.closed {
+		r.eng.Observe(false)
 		r.idleSince = time.Now()
 		if r.idleTimeout > 0 {
 			if r.idleTimer != nil {
@@ -311,11 +316,10 @@ func (r *room) Submit(msg []byte) error {
 	return r.eng.SubmitMessage(msg)
 }
 
+// snapshot returns the room's current state. It asks the engine, because
+// while no one watches, the last broadcast frame lags behind.
 func (r *room) snapshot() []byte {
-	if lo := r.lastOutput.Load(); lo != nil {
-		return lo.([]byte)
-	}
-	return nil
+	return r.eng.Snapshot()
 }
 
 func (r *room) setName(name string) {

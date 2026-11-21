@@ -19,8 +19,14 @@ type EngineConfig interface {
 }
 
 type Engine interface {
+	// Observe says whether anyone receives Output. While no one does,
+	// generations still run but their frames are not encoded; observing again
+	// emits the current frame if one was skipped. Engines start observed.
+	Observe(on bool)
 	Output() <-chan []byte
 	Playing() bool
+	// Snapshot returns the current state as an encoded protocol.Output.
+	Snapshot() []byte
 	Speed() uint32
 	Start()
 	SubmitMessage(b []byte) error
@@ -69,8 +75,12 @@ type engine struct {
 	conway conway.Conway
 	mutex  sync.Mutex // guards conway, output and encodeBuffer
 
-	play      atomic.Uint32 // playState
-	lifecycle atomic.Uint32 // lifecycle
+	play atomic.Uint32 // playState
+	// unobserved is set while no one receives Output, and stale once a
+	// generation has gone unencoded since.
+	unobserved atomic.Bool
+	stale      atomic.Bool
+	lifecycle  atomic.Uint32 // lifecycle
 
 	// speed is the tick period in ms. A change is signalled on speedChanged, a
 	// one-slot channel: the ticker loop resets the ticker to the current speed
@@ -113,6 +123,19 @@ func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) (Engine, erro
 	return e, nil
 }
 
+func (e *engine) Observe(on bool) {
+	e.unobserved.Store(!on)
+	if on && e.stale.Swap(false) {
+		e.generateOutput()
+	}
+}
+
+func (e *engine) Snapshot() []byte {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.encodeLocked()
+}
+
 func (e *engine) Output() <-chan []byte {
 	return e.outputChan
 }
@@ -150,7 +173,11 @@ func (e *engine) Start() {
 			start := time.Now()
 			if e.Playing() {
 				e.calcNextGen()
-				e.generateOutput()
+				if e.unobserved.Load() {
+					e.stale.Store(true)
+				} else {
+					e.generateOutput()
+				}
 			}
 			// After an overrun the next tick is already due, so the loop would
 			// never block. In a single-threaded runtime such as WASM, where
@@ -208,6 +235,14 @@ func (e *engine) calcNextGen() {
 
 func (e *engine) generateOutput() {
 	e.mutex.Lock()
+	out := e.encodeLocked()
+	e.mutex.Unlock()
+
+	e.emit(out, false)
+}
+
+// encodeLocked encodes the current state into a new slice. e.mutex must be held.
+func (e *engine) encodeLocked() []byte {
 	e.output.Cells = e.output.Cells[:0]
 	for c := range e.conway.Cells() {
 		e.output.Cells = append(e.output.Cells, protocol.Cell{X: c.X, Y: c.Y, Colour: c.Colour, Age: c.Age})
@@ -219,10 +254,7 @@ func (e *engine) generateOutput() {
 	// The encoded size is only known after encoding, so encode into a reused buffer.
 	// Every output gets its own exact-size copy because it is shared with all listeners.
 	e.encodeBuffer = e.output.Encode(e.encodeBuffer[:0])
-	out := bytes.Clone(e.encodeBuffer)
-	e.mutex.Unlock()
-
-	e.emit(out, false)
+	return bytes.Clone(e.encodeBuffer)
 }
 
 // generateStateUpdate broadcasts only the play state and speed, for changes
