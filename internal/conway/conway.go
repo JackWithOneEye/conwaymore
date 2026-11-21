@@ -22,75 +22,77 @@ type Conway interface {
 	SetCell(x, y uint16, colour uint32, age uint16)
 }
 
-// conway stores the world as flat arrays indexed by y*axisLength + x.
+// conway stores which cells are alive as a bitboard: cell (x, y) is bit x&63
+// of word y*wordsPerRow + x>>6. Generations are computed 64 cells at a time
+// with bitwise adders, skipping words whose neighbourhood is empty. Colours
+// and ages are flat arrays indexed by y*axisLength + x.
 type conway struct {
-	axisLength int
-	axisShift  int
-	wrapMask   int
+	axisLength  int
+	axisShift   int
+	wrapMask    int
+	wordsPerRow int
+	rowShift    int // log2(wordsPerRow)
+	// A world narrower than 64 cells keeps each row in the low bits of one
+	// word. topBit is the row's last bit and rowMask its bits, so that one
+	// formula shifts rows of every width (see NextGen).
+	topBit  uint
+	rowMask uint64
 
-	alive  []uint8 // 1 if alive, so neighbours can be counted by summing
+	alive  []uint64
+	next   []uint64 // backing array for the next generation
 	colour []uint32
 	age    []uint16
 	count  int
-
-	// candidates are the cells that can change in the next generation: alive cells
-	// (they age or die) and the neighbourhoods of cells that were born or died.
-	candidates []int32
-	queued     []bool  // whether a cell is in candidates
-	spare      []int32 // backing array for the next candidates list
-	changes    []change
-}
-
-// change is a birth or death, applied once the whole generation has been computed.
-type change struct {
-	idx    int32
-	colour uint32
-	born   bool
 }
 
 func NewConway(cfg ConwayConfig) Conway {
 	axisLength := int(cfg.WorldSize())
-	cellCount := axisLength * axisLength
+	wordsPerRow := max(1, axisLength/64)
+	rowMask := ^uint64(0)
+	if axisLength < 64 {
+		rowMask = 1<<axisLength - 1
+	}
 
 	return &conway{
-		axisLength: axisLength,
-		axisShift:  bits.TrailingZeros(uint(axisLength)),
-		wrapMask:   axisLength - 1,
-		alive:      make([]uint8, cellCount),
-		colour:     make([]uint32, cellCount),
-		age:        make([]uint16, cellCount),
-		queued:     make([]bool, cellCount),
+		axisLength:  axisLength,
+		axisShift:   bits.TrailingZeros(uint(axisLength)),
+		wrapMask:    axisLength - 1,
+		wordsPerRow: wordsPerRow,
+		rowShift:    bits.TrailingZeros(uint(wordsPerRow)),
+		topBit:      uint(min(axisLength, 64) - 1),
+		rowMask:     rowMask,
+		alive:       make([]uint64, axisLength*wordsPerRow),
+		next:        make([]uint64, axisLength*wordsPerRow),
+		colour:      make([]uint32, axisLength*axisLength),
+		age:         make([]uint16, axisLength*axisLength),
 	}
 }
 
 func (c *conway) CanSetCell(x, y uint16) bool {
-	return c.alive[c.index(x, y)] == 0
+	word, bit := c.bitIndex(int(x)&c.wrapMask, int(y)&c.wrapMask)
+	return c.alive[word]>>bit&1 == 0
 }
 
 func (c *conway) Clear() {
 	clear(c.alive)
 	c.count = 0
-	for _, i := range c.candidates {
-		c.queued[i] = false
-	}
-	c.candidates = c.candidates[:0]
 }
 
 // Cells yields the alive cells row by row.
 func (c *conway) Cells() iter.Seq[Cell] {
 	return func(yield func(Cell) bool) {
-		for i, a := range c.alive {
-			if a == 0 {
-				continue
-			}
-			cell := Cell{
-				X:      uint16(i & c.wrapMask),
-				Y:      uint16(i >> c.axisShift),
-				Colour: c.colour[i],
-				Age:    c.age[i],
-			}
-			if !yield(cell) {
-				return
+		for wi, w := range c.alive {
+			for ; w != 0; w &= w - 1 {
+				i := c.cellIndex(wi, bits.TrailingZeros64(w))
+				cell := Cell{
+					X:      uint16(i & c.wrapMask),
+					Y:      uint16(i >> c.axisShift),
+					Colour: c.colour[i],
+					Age:    c.age[i],
+				}
+				if !yield(cell) {
+					return
+				}
 			}
 		}
 	}
@@ -101,113 +103,138 @@ func (c *conway) CellsCount() uint {
 }
 
 func (c *conway) NextGen() {
-	current := c.candidates
-	for _, i := range current {
-		c.queued[i] = false
-	}
-	c.candidates = c.spare[:0]
-	c.changes = c.changes[:0]
+	n, wpr, m := c.axisLength, c.wordsPerRow, c.wrapMask
+	top, mask := c.topBit, c.rowMask
+	count := 0
 
-	n, m := c.axisLength, c.wrapMask
-	for _, ci := range current {
-		i := int(ci)
-		x, y := i&m, i>>c.axisShift
-		xLeft, xRight := (x-1)&m, (x+1)&m
-		up, row, down := ((y-1)&m)*n, y*n, ((y+1)&m)*n
-		neighbours := [8]int{
-			up + xLeft, up + x, up + xRight,
-			row + xLeft, row + xRight,
-			down + xLeft, down + x, down + xRight,
-		}
-		var numNeighbours uint8
-		for _, j := range neighbours {
-			numNeighbours += c.alive[j]
-		}
+	for y := range n {
+		up := c.alive[((y-1)&m)*wpr:][:wpr]
+		row := c.alive[y*wpr:][:wpr]
+		down := c.alive[((y+1)&m)*wpr:][:wpr]
+		out := c.next[y*wpr:][:wpr]
 
-		if c.alive[i] == 1 {
-			if numNeighbours == 2 || numNeighbours == 3 {
-				// Ages are not read by neighbours, so they can be updated in place.
-				if c.age[i] < math.MaxUint16 {
-					c.age[i]++
-				}
-				c.enqueue(ci)
-			} else {
-				c.changes = append(c.changes, change{idx: ci})
-				c.enqueueNeighbourhood(x, y)
+		for i := range wpr {
+			l, r := i-1, i+1
+			if l < 0 {
+				l = wpr - 1
 			}
-		} else if numNeighbours == 3 {
-			// Mix the colours of the three parents: red from the first, green from the second, blue from the third.
-			var parents [3]uint32
-			p := 0
-			for _, j := range neighbours {
-				if c.alive[j] == 1 {
-					parents[p] = c.colour[j]
-					p++
+			if r == wpr {
+				r = 0
+			}
+			ul, u, ur := up[l], up[i], up[r]
+			ml, w, mr := row[l], row[i], row[r]
+			dl, d, dr := down[l], down[i], down[r]
+			if ul|u|ur|ml|w|mr|dl|d|dr == 0 {
+				out[i] = 0
+				continue
+			}
+
+			// Bit-sliced neighbour count: s0 and s1 are its two low bits, s2
+			// is set from four neighbours on. A west neighbour of bit j is bit
+			// j-1, so shift left, taking bit 0 from the left word's top bit.
+			var s0, s1, s2 uint64
+			s0, s1, s2 = add(s0, s1, s2, (u<<1|ul>>top)&mask)
+			s0, s1, s2 = add(s0, s1, s2, u)
+			s0, s1, s2 = add(s0, s1, s2, (u>>1|ur<<top)&mask)
+			s0, s1, s2 = add(s0, s1, s2, (w<<1|ml>>top)&mask)
+			s0, s1, s2 = add(s0, s1, s2, (w>>1|mr<<top)&mask)
+			s0, s1, s2 = add(s0, s1, s2, (d<<1|dl>>top)&mask)
+			s0, s1, s2 = add(s0, s1, s2, d)
+			s0, s1, s2 = add(s0, s1, s2, (d>>1|dr<<top)&mask)
+			// Alive next with three neighbours, or with two if alive now.
+			nw := s1 &^ s2 & (s0 | w)
+			out[i] = nw
+			count += bits.OnesCount64(nw)
+
+			// Neither loop reads what the other writes: parents are alive now,
+			// so they are never cells being born.
+			for born := nw &^ w; born != 0; born &= born - 1 {
+				x := i<<6 | bits.TrailingZeros64(born)
+				idx := y*n + x
+				c.colour[idx] = c.parentColour(x, y)
+				c.age[idx] = 0
+			}
+			for survived := nw & w; survived != 0; survived &= survived - 1 {
+				idx := y*n + (i<<6 | bits.TrailingZeros64(survived))
+				if c.age[idx] < math.MaxUint16 {
+					c.age[idx]++
 				}
 			}
-			colour := (parents[0] & 0xff0000) | (parents[1] & 0x00ff00) | (parents[2] & 0x0000ff)
-			c.changes = append(c.changes, change{idx: ci, colour: colour, born: true})
-			c.enqueueNeighbourhood(x, y)
 		}
 	}
 
-	for _, ch := range c.changes {
-		if ch.born {
-			c.alive[ch.idx] = 1
-			c.colour[ch.idx] = ch.colour
-			c.age[ch.idx] = 0
-			c.count++
-		} else {
-			c.alive[ch.idx] = 0
-			c.count--
+	c.alive, c.next = c.next, c.alive
+	c.count = count
+}
+
+// add adds the bits of v to the bit-sliced counters s0, s1, s2.
+func add(s0, s1, s2, v uint64) (uint64, uint64, uint64) {
+	c0 := s0 & v
+	s0 ^= v
+	c1 := s1 & c0
+	s1 ^= c0
+	return s0, s1, s2 | c1
+}
+
+// parentColour mixes the colours of the three alive neighbours of (x, y), in
+// row order: red from the first, green from the second, blue from the third.
+func (c *conway) parentColour(x, y int) uint32 {
+	m := c.wrapMask
+	rows := [3]int{(y - 1) & m, y, (y + 1) & m}
+	cols := [3]int{(x - 1) & m, x, (x + 1) & m}
+	var parents [3]uint32
+	p := 0
+	for ri, ny := range rows {
+		for ci, nx := range cols {
+			if ri == 1 && ci == 1 {
+				continue
+			}
+			word, bit := c.bitIndex(nx, ny)
+			if c.alive[word]>>bit&1 == 1 {
+				parents[p] = c.colour[ny*c.axisLength+nx]
+				p++
+				if p == 3 {
+					return (parents[0] & 0xff0000) | (parents[1] & 0x00ff00) | (parents[2] & 0x0000ff)
+				}
+			}
 		}
 	}
-	c.spare = current
+	panic("conway: a cell was born without three parents")
 }
 
 func (c *conway) Randomise() {
-	c.Clear()
-
-	for i := range c.alive {
-		if rand.UintN(2) != 1 {
-			continue
+	c.count = 0
+	for wi := range c.alive {
+		w := rand.Uint64() & c.rowMask
+		c.alive[wi] = w
+		c.count += bits.OnesCount64(w)
+		for ; w != 0; w &= w - 1 {
+			i := c.cellIndex(wi, bits.TrailingZeros64(w))
+			c.colour[i] = rand.Uint32N(0xffffff) + 1
+			c.age[i] = 0
 		}
-		c.set(i, rand.Uint32N(0xffffff)+1, 0)
 	}
 }
 
 // SetCell sets a cell alive. Coordinates outside the world wrap around.
 func (c *conway) SetCell(x, y uint16, colour uint32, age uint16) {
-	c.set(c.index(x, y), colour, age)
-}
-
-func (c *conway) set(i int, colour uint32, age uint16) {
-	if c.alive[i] == 0 {
-		c.alive[i] = 1
+	cx, cy := int(x)&c.wrapMask, int(y)&c.wrapMask
+	word, bit := c.bitIndex(cx, cy)
+	if c.alive[word]>>bit&1 == 0 {
+		c.alive[word] |= 1 << bit
 		c.count++
 	}
+	i := cy*c.axisLength + cx
 	c.colour[i] = colour
 	c.age[i] = age
-	c.enqueueNeighbourhood(i&c.wrapMask, i>>c.axisShift)
 }
 
-func (c *conway) index(x, y uint16) int {
-	return (int(y)&c.wrapMask)*c.axisLength + int(x)&c.wrapMask
+// bitIndex returns the word and bit of cell (x, y), which must lie in the world.
+func (c *conway) bitIndex(x, y int) (word int, bit uint) {
+	return y*c.wordsPerRow + x>>6, uint(x & 63)
 }
 
-func (c *conway) enqueue(i int32) {
-	if !c.queued[i] {
-		c.queued[i] = true
-		c.candidates = append(c.candidates, i)
-	}
-}
-
-func (c *conway) enqueueNeighbourhood(x, y int) {
-	m := c.wrapMask
-	for dy := -1; dy <= 1; dy++ {
-		row := ((y + dy) & m) * c.axisLength
-		for dx := -1; dx <= 1; dx++ {
-			c.enqueue(int32(row + (x+dx)&m))
-		}
-	}
+// cellIndex returns the colour and age index of bit bit of word wi.
+func (c *conway) cellIndex(wi, bit int) int {
+	return (wi>>c.rowShift)<<c.axisShift + (wi&(c.wordsPerRow-1))<<6 + bit
 }
