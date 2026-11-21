@@ -362,9 +362,12 @@ type manager struct {
 	maxLoadedGames int
 	idleTimeout    time.Duration
 
-	mu           sync.Mutex
-	rooms        map[int64]*room
+	mu    sync.Mutex
+	rooms map[int64]*room
+	// unloading and loading hold the games whose room is being stopped or
+	// built outside mu; each channel is closed once that is done.
 	unloading    map[int64]chan struct{}
+	loading      map[int64]chan struct{}
 	shuttingDown bool
 }
 
@@ -376,6 +379,7 @@ func NewManager(cfg ManagerConfig, db database.DatabaseService) Manager {
 		idleTimeout:    cfg.IdleTimeout(),
 		rooms:          make(map[int64]*room),
 		unloading:      make(map[int64]chan struct{}),
+		loading:        make(map[int64]chan struct{}),
 	}
 }
 
@@ -506,7 +510,7 @@ func (m *manager) Get(ctx context.Context, id int64) (Game, error) {
 			m.mu.Unlock()
 			return nil, ErrShuttingDown
 		}
-		if done, ok := m.unloading[id]; ok {
+		if done, ok := m.busyLocked(id); ok {
 			m.mu.Unlock()
 			select {
 			case <-done:
@@ -521,7 +525,7 @@ func (m *manager) Get(ctx context.Context, id int64) (Game, error) {
 		}
 
 		// Enforce maxLoadedGames by evicting the oldest idle room if needed.
-		if m.maxLoadedGames > 0 && len(m.rooms) >= m.maxLoadedGames {
+		if m.maxLoadedGames > 0 && len(m.rooms)+len(m.loading) >= m.maxLoadedGames {
 			victim := m.pickIdleVictimLocked()
 			if victim == nil {
 				m.mu.Unlock()
@@ -533,26 +537,54 @@ func (m *manager) Get(ctx context.Context, id int64) (Game, error) {
 			continue
 		}
 
-		rec, err := m.db.GetGame(ctx, id)
-		if err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
-		if Mode(rec.Mode) == ModeSingle {
-			m.mu.Unlock()
-			return nil, ErrSinglePlayer
-		}
-
-		r, err := newRoom(rec, m.idleTimeout, m.unloadIfIdle)
-		if err != nil {
-			m.mu.Unlock()
-			return nil, err
-		}
-		m.rooms[id] = r
+		// Build the room without holding mu, so that requests for other games
+		// do not wait for this one's database read and world.
+		done := make(chan struct{})
+		m.loading[id] = done
 		m.mu.Unlock()
+
+		r, err := m.load(ctx, id)
+
+		m.mu.Lock()
+		delete(m.loading, id)
+		close(done)
+		if err == nil && m.shuttingDown {
+			err = ErrShuttingDown
+		} else if err == nil {
+			m.rooms[id] = r
+		}
+		m.mu.Unlock()
+		if err != nil {
+			if r != nil {
+				r.stop(false) // unchanged since it was read, so there is nothing to save
+			}
+			return nil, err
+		}
 		log.Printf("game %d (%s, %dx%d): loaded", r.id, r.name, r.worldSize, r.worldSize)
 		return r, nil
 	}
+}
+
+// load builds the room of a multiplayer game from its stored state.
+func (m *manager) load(ctx context.Context, id int64) (*room, error) {
+	rec, err := m.db.GetGame(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if Mode(rec.Mode) == ModeSingle {
+		return nil, ErrSinglePlayer
+	}
+	return newRoom(rec, m.idleTimeout, m.unloadIfIdle)
+}
+
+// busyLocked returns the channel to wait on while game id is being loaded or
+// unloaded. m.mu must be held.
+func (m *manager) busyLocked(id int64) (chan struct{}, bool) {
+	if done, ok := m.unloading[id]; ok {
+		return done, true
+	}
+	done, ok := m.loading[id]
+	return done, ok
 }
 
 func (m *manager) pickIdleVictimLocked() *room {
@@ -632,22 +664,34 @@ func (m *manager) Rename(ctx context.Context, id int64, rawName string) (Info, e
 		return Info{}, err
 	}
 
-	m.mu.Lock()
-	if r, ok := m.rooms[id]; ok {
-		r.setName(name)
-		info := r.Info()
+	for {
+		m.mu.Lock()
+		// A room being loaded may have read the record before the rename.
+		if done, ok := m.loading[id]; ok {
+			m.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return Info{}, ctx.Err()
+			}
+		}
+		if r, ok := m.rooms[id]; ok {
+			r.setName(name)
+			info := r.Info()
+			m.mu.Unlock()
+			return info, nil
+		}
 		m.mu.Unlock()
-		return info, nil
-	}
-	m.mu.Unlock()
 
-	return m.GetInfo(ctx, id)
+		return m.GetInfo(ctx, id)
+	}
 }
 
 func (m *manager) Delete(ctx context.Context, id int64) error {
 	for {
 		m.mu.Lock()
-		if done, ok := m.unloading[id]; ok {
+		if done, ok := m.busyLocked(id); ok {
 			m.mu.Unlock()
 			select {
 			case <-done:
@@ -679,7 +723,7 @@ func (m *manager) Delete(ctx context.Context, id int64) error {
 func (m *manager) Save(ctx context.Context, id int64) error {
 	for {
 		m.mu.Lock()
-		if done, ok := m.unloading[id]; ok {
+		if done, ok := m.busyLocked(id); ok {
 			m.mu.Unlock()
 			select {
 			case <-done:

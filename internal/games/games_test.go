@@ -263,3 +263,63 @@ func TestDamagedSeedIsNotOverwritten(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, damaged, rec.Seed)
 }
+
+// blockingDB stalls GetGame for one game until release is closed.
+type blockingDB struct {
+	database.DatabaseService
+	id      int64
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingDB) GetGame(ctx context.Context, id int64) (*database.GameRecord, error) {
+	if id == b.id {
+		close(b.started)
+		<-b.release
+	}
+	return b.DatabaseService.GetGame(ctx, id)
+}
+
+// TestLoadingAGameDoesNotBlockOthers checks that the manager builds a room
+// without holding its lock, so a slow load leaves other games usable.
+func TestLoadingAGameDoesNotBlockOthers(t *testing.T) {
+	_, db := newTestManager(t, 10, 10, 0)
+	ctx := context.Background()
+	cfg := testConfig{maxGames: 10, maxLoaded: 10}
+	setup := NewManager(cfg, db)
+	slow, err := setup.Create(ctx, CreateParams{Name: "Slow", WorldSize: 128})
+	require.NoError(t, err)
+	fast, err := setup.Create(ctx, CreateParams{Name: "Fast", WorldSize: 128})
+	require.NoError(t, err)
+
+	bdb := &blockingDB{DatabaseService: db, id: slow.ID, started: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewManager(cfg, bdb)
+	defer mgr.Shutdown(ctx)
+
+	slowLoaded := make(chan error, 1)
+	go func() {
+		_, err := mgr.Get(ctx, slow.ID)
+		slowLoaded <- err
+	}()
+	<-bdb.started
+
+	others := make(chan error, 1)
+	go func() {
+		if _, err := mgr.Get(ctx, fast.ID); err != nil {
+			others <- err
+			return
+		}
+		_, err := mgr.List(ctx)
+		others <- err
+	}()
+	select {
+	case err := <-others:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		close(bdb.release) // let the deferred Shutdown take the lock
+		t.Fatal("loading one game blocked another")
+	}
+
+	close(bdb.release)
+	require.NoError(t, <-slowLoaded)
+}
