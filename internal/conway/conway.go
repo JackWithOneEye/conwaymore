@@ -149,9 +149,14 @@ func (c *conway) NextGen() {
 			// Neither loop reads what the other writes: parents are alive now,
 			// so they are never cells being born.
 			for born := nw &^ w; born != 0; born &= born - 1 {
-				x := i<<6 | bits.TrailingZeros64(born)
+				bit := uint(bits.TrailingZeros64(born))
+				x := i<<6 | int(bit)
 				idx := y*n + x
-				c.colour[idx] = c.parentColour(x, y)
+				c.colour[idx] = c.parentColour(x, y, [3]uint{
+					window(ul, u, ur, bit, top),
+					window(ml, w, mr, bit, top), // the cell itself is dead, so it is no parent
+					window(dl, d, dr, bit, top),
+				})
 				c.age[idx] = 0
 			}
 			for survived := nw & w; survived != 0; survived &= survived - 1 {
@@ -176,30 +181,41 @@ func add(s0, s1, s2, v uint64) (uint64, uint64, uint64) {
 	return s0, s1, s2 | c1
 }
 
+// window returns the alive bits of columns x-1, x and x+1 of a row as bits
+// 0, 1 and 2, where x is bit bit of mid and left and right are mid's
+// neighbouring words (all three are the same word in a world narrower than 64).
+func window(left, mid, right uint64, bit, top uint) uint {
+	var west, east uint64
+	if bit == 0 {
+		west = left >> top & 1
+	} else {
+		west = mid >> (bit - 1) & 1
+	}
+	if bit == top {
+		east = right & 1
+	} else {
+		east = mid >> (bit + 1) & 1
+	}
+	return uint(west | (mid>>bit&1)<<1 | east<<2)
+}
+
 // parentColour mixes the colours of the three alive neighbours of (x, y), in
 // row order: red from the first, green from the second, blue from the third.
-func (c *conway) parentColour(x, y int) uint32 {
-	m := c.wrapMask
-	rows := [3]int{(y - 1) & m, y, (y + 1) & m}
-	cols := [3]int{(x - 1) & m, x, (x + 1) & m}
+// neighbours holds the alive bits around the cell (see window) for the rows
+// above, at, and below it.
+func (c *conway) parentColour(x, y int, neighbours [3]uint) uint32 {
+	m, n := c.wrapMask, c.axisLength
+	rows := [3]int{((y - 1) & m) * n, y * n, ((y + 1) & m) * n}
 	var parents [3]uint32
 	p := 0
-	for ri, ny := range rows {
-		for ci, nx := range cols {
-			if ri == 1 && ci == 1 {
-				continue
-			}
-			word, bit := c.bitIndex(nx, ny)
-			if c.alive[word]>>bit&1 == 1 {
-				parents[p] = c.colour[ny*c.axisLength+nx]
-				p++
-				if p == 3 {
-					return (parents[0] & 0xff0000) | (parents[1] & 0x00ff00) | (parents[2] & 0x0000ff)
-				}
-			}
+	for r, nb := range neighbours {
+		for ; nb != 0; nb &= nb - 1 {
+			dx := bits.TrailingZeros(nb) - 1
+			parents[p] = c.colour[rows[r]+(x+dx)&m]
+			p++
 		}
 	}
-	panic("conway: a cell was born without three parents")
+	return (parents[0] & 0xff0000) | (parents[1] & 0x00ff00) | (parents[2] & 0x0000ff)
 }
 
 func (c *conway) Randomise() {
