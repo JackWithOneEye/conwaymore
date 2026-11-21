@@ -33,4 +33,5 @@ export const EngineWorkerMessageType = /** @type {const} */ ({
 export const EngineWorkerEventType = /** @type {const} */ ({
   Ready: 0,
   Snapshot: 1,
+  Error: 2,
 });

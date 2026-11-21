@@ -18,7 +18,7 @@ export function signal(value) {
    */
   signalInstance.update = (valueOrFn) => {
     // @ts-ignore
-    const newValue = typeof valueOrFn === 'function' ? valueOrFn(internalValue) : valueOrFn
+    const newValue = typeof valueOrFn === 'function' ? valueOrFn(refObj.value) : valueOrFn
 
     if (newValue === refObj.value) {
       return;
@@ -44,8 +44,10 @@ export function reactive(obj) {
     },
     set(target, key, newValue) {
       // @ts-ignore
+      // An unchanged value notifies nobody, but the assignment still succeeds:
+      // a falsish result would throw a TypeError in strict mode.
       if (target[key] === newValue) {
-        return false;
+        return true;
       }
       // @ts-ignore
       target[key] = newValue;

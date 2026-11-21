@@ -130,6 +130,12 @@ export declare type EngineSnapshotEvent = {
   seed: Uint8Array<ArrayBuffer>; // an encoded protocol.Output
 };
 
-export declare type EngineWorkerEvent = EngineReadyEvent | EngineSnapshotEvent;
+// The game could not start, because its saved state does not decode.
+export declare type EngineErrorEvent = {
+  type: typeof EngineWorkerEventType.Error;
+  message: string;
+};
+
+export declare type EngineWorkerEvent = EngineReadyEvent | EngineSnapshotEvent | EngineErrorEvent;
 
 // #endregion engine worker

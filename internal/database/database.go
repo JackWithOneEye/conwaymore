@@ -38,7 +38,9 @@ type DatabaseService interface {
 	Close() error
 	CreateGame(ctx context.Context, name, mode string, worldSize uint, seed []byte, maxGames int) (*GameRecord, error)
 	GetGame(ctx context.Context, id int64) (*GameRecord, error)
-	ListGames(ctx context.Context) ([]GameRecord, error)
+	// ListGames returns every game. Each record's Seed holds only the first
+	// seedPrefix bytes of the stored seed, so listing never loads whole worlds.
+	ListGames(ctx context.Context, seedPrefix int) ([]GameRecord, error)
 	RenameGame(ctx context.Context, id int64, name string) error
 	SaveGameSeed(ctx context.Context, id int64, seed []byte, savedAt int64) error
 	DeleteGame(ctx context.Context, id int64) error
@@ -247,10 +249,11 @@ func (s *service) GetGame(ctx context.Context, id int64) (*GameRecord, error) {
 	return &rec, nil
 }
 
-func (s *service) ListGames(ctx context.Context) ([]GameRecord, error) {
+func (s *service) ListGames(ctx context.Context, seedPrefix int) ([]GameRecord, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		"SELECT id, name, mode, world_size, seed, created_at, saved_at FROM games ORDER BY id ASC",
+		"SELECT id, name, mode, world_size, substr(seed, 1, ?), created_at, saved_at FROM games ORDER BY id ASC",
+		seedPrefix,
 	)
 	if err != nil {
 		return nil, err

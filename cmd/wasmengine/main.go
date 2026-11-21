@@ -27,6 +27,7 @@ const (
 const (
 	evtReady = iota
 	evtSnapshot
+	evtError
 )
 
 // clientBuffer is how many of the canvas worker's messages may wait to be
@@ -49,7 +50,13 @@ func main() {
 				return nil
 			}
 			seed := jsport.FromJS(data.Get("seed"))
-			game = local.NewGame(uint(data.Get("worldSize").Int()), seed)
+			g, err := local.NewGame(uint(data.Get("worldSize").Int()), seed)
+			if err != nil {
+				log.Printf("engine worker: could not start the game: %s", err)
+				global.Call("postMessage", map[string]any{"type": evtError, "message": err.Error()})
+				return nil
+			}
+			game = g
 			log.Printf("single-player game started (%d bytes of state)", len(seed))
 			started <- jsport.New(data.Get("port"), clientBuffer)
 		case msgSnapshot:

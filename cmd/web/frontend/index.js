@@ -71,6 +71,12 @@ engineWorker?.addEventListener('error', (e) => {
   console.error(e);
   showError('The simulation stopped');
 });
+engineWorker?.addEventListener('message', (/** @type {MessageEvent<EngineWorkerEvent>} */ e) => {
+  if (e.data.type === EngineWorkerEventType.Error) {
+    console.error('engine worker:', e.data.message);
+    showError('Could not load this game: its saved state is damaged');
+  }
+});
 
 window.addEventListener('pagehide', () => {
   canvasWorker.terminate();

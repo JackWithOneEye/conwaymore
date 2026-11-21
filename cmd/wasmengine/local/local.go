@@ -29,16 +29,21 @@ type Game struct {
 
 // NewGame starts an engine for a world of the given size from seed, an
 // encoded protocol.Output; an empty seed starts an empty, paused world.
-func NewGame(size uint, seed []byte) *Game {
+func NewGame(size uint, seed []byte) (*Game, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	eng, err := engine.NewEngine(worldSize(size), seed, ctx)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	g := &Game{
-		eng:    engine.NewEngine(worldSize(size), seed, ctx),
+		eng:    eng,
 		cancel: cancel,
 		frames: make(chan []byte, 1),
 	}
 	go g.pump()
 	go g.eng.Start()
-	return g
+	return g, nil
 }
 
 // pump moves the engine's messages to frames as soon as they are emitted, so

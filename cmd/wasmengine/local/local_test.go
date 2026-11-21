@@ -38,7 +38,8 @@ func TestGameRunsFromSeedAndSnapshotsIt(t *testing.T) {
 		Speed:      300,
 	}).Encode(nil)
 
-	l := NewGame(128, seed)
+	l, err := NewGame(128, seed)
+	require.NoError(t, err)
 	defer l.Close()
 
 	first := recvFrame(t, l)
@@ -70,7 +71,8 @@ func TestGameRunsFromSeedAndSnapshotsIt(t *testing.T) {
 	require.ElementsMatch(t, horizontal.Cells, o.Cells)
 
 	// Reloading the snapshot continues the game where it stopped.
-	l2 := NewGame(128, snap)
+	l2, err := NewGame(128, snap)
+	require.NoError(t, err)
 	defer l2.Close()
 	reloaded := recvFrame(t, l2)
 	require.Equal(t, uint16(40), reloaded.Speed)
@@ -86,7 +88,8 @@ func TestGamePlaysOnItsOwn(t *testing.T) {
 		Playing:    true,
 		Speed:      5,
 	}).Encode(nil)
-	l := NewGame(128, seed)
+	l, err := NewGame(128, seed)
+	require.NoError(t, err)
 	defer l.Close()
 
 	recvFrame(t, l)

@@ -88,7 +88,10 @@ type engine struct {
 	outputChan chan []byte
 }
 
-func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
+// NewEngine creates an engine for the world in seed, an encoded protocol.Output;
+// an empty seed starts an empty, paused world. A seed that does not decode is
+// an error, so that a damaged game is never replaced by an empty one.
+func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) (Engine, error) {
 	ws := cfg.WorldSize()
 	e := &engine{
 		ctx:          ctx,
@@ -101,13 +104,13 @@ func NewEngine(cfg EngineConfig, seed []byte, ctx context.Context) Engine {
 	e.speed.Store(100)
 	if len(seed) > 0 {
 		if err := e.setSeed(seed); err != nil {
-			log.Printf("error setting seed: %s", err)
+			return nil, fmt.Errorf("invalid seed: %w", err)
 		}
 	}
 
 	e.generateOutput()
 
-	return e
+	return e, nil
 }
 
 func (e *engine) Output() <-chan []byte {
@@ -255,8 +258,7 @@ func (e *engine) emit(b []byte, wait bool) {
 	}
 	select {
 	case e.outputChan <- b:
-	default:
-		log.Println("NOPE")
+	default: // the consumer still holds older frames; this one is superseded by the next
 	}
 }
 

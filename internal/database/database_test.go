@@ -32,7 +32,7 @@ func TestLegacyMigration(t *testing.T) {
 	dbs := NewDatabaseService(testDBConfig{url: dbPath, worldSize: 512})
 	defer dbs.Close()
 
-	games, err := dbs.ListGames(context.Background())
+	games, err := dbs.ListGames(context.Background(), len(legacySeed))
 	require.NoError(t, err)
 	require.Len(t, games, 1)
 	require.Equal(t, int64(1), games[0].ID)
@@ -95,6 +95,17 @@ func TestGameCRUDAndLimits(t *testing.T) {
 	require.Equal(t, seed, got.Seed)
 	require.NotNil(t, got.SavedAt)
 	require.Equal(t, int64(123456789), *got.SavedAt)
+
+	// Listing returns only the requested prefix of each seed; a game without a seed has none.
+	list, err := dbs.ListGames(ctx, 3)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, []byte{1, 0, 25}, list[0].Seed)
+	require.Equal(t, []byte{0, 0, 100}, list[1].Seed)
+	require.NoError(t, dbs.SaveGameSeed(ctx, g1.ID, nil, 1))
+	list, err = dbs.ListGames(ctx, 3)
+	require.NoError(t, err)
+	require.Empty(t, list[0].Seed)
 
 	// Delete and check not found.
 	require.NoError(t, dbs.DeleteGame(ctx, g1.ID))

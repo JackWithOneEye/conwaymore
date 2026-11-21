@@ -7,7 +7,10 @@ import (
 	"slices"
 )
 
-const cellsOffset = 6
+// HeaderLen is the length of an Output's header: playing, speed and cells count.
+const HeaderLen = 6
+
+const cellsOffset = HeaderLen
 
 // Bounds on the encoded size of one cell: a position uvarint of 1 to 5 bytes,
 // 3 colour bytes, and an age uvarint of 1 to 3 bytes.

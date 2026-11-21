@@ -241,3 +241,25 @@ func TestDeleteNotifiesActiveSubscribers(t *testing.T) {
 	_, err = mgr.Get(ctx, info.ID)
 	require.ErrorIs(t, err, ErrNotFound)
 }
+
+// TestDamagedSeedIsNotOverwritten checks that a game whose stored state does
+// not decode refuses to load, instead of running, and later autosaving, an
+// empty world in its place.
+func TestDamagedSeedIsNotOverwritten(t *testing.T) {
+	mgr, db := newTestManager(t, 10, 10, 0)
+	ctx := context.Background()
+
+	info, err := mgr.Create(ctx, CreateParams{Name: "Damaged", WorldSize: 128})
+	require.NoError(t, err)
+	// The header claims three cells, but none follow.
+	damaged := []byte{0, 0, 100, 0, 0, 3}
+	require.NoError(t, db.SaveGameSeed(ctx, info.ID, damaged, 1))
+
+	_, err = mgr.Get(ctx, info.ID)
+	require.Error(t, err)
+
+	require.NoError(t, mgr.Shutdown(ctx))
+	rec, err := db.GetGame(ctx, info.ID)
+	require.NoError(t, err)
+	require.Equal(t, damaged, rec.Seed)
+}

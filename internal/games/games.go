@@ -192,9 +192,13 @@ type room struct {
 	idleSince time.Time
 }
 
-func newRoom(rec *database.GameRecord, idleTimeout time.Duration, onIdle func(*room)) *room {
+func newRoom(rec *database.GameRecord, idleTimeout time.Duration, onIdle func(*room)) (*room, error) {
 	roomCtx, cancel := context.WithCancel(context.Background())
-	eng := engine.NewEngine(worldSizeConfig(rec.WorldSize), rec.Seed, roomCtx)
+	eng, err := engine.NewEngine(worldSizeConfig(rec.WorldSize), rec.Seed, roomCtx)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("game %d: %w", rec.ID, err)
+	}
 
 	r := &room{
 		id:            rec.ID,
@@ -224,7 +228,7 @@ func newRoom(rec *database.GameRecord, idleTimeout time.Duration, onIdle func(*r
 		})
 	}
 
-	return r
+	return r, nil
 }
 
 func (r *room) runBroadcast() {
@@ -465,7 +469,7 @@ func (m *manager) Create(ctx context.Context, p CreateParams) (Info, error) {
 }
 
 func (m *manager) List(ctx context.Context) ([]Info, error) {
-	recs, err := m.db.ListGames(ctx)
+	recs, err := m.db.ListGames(ctx, protocol.HeaderLen) // infoFromRecord reads only the header
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +551,11 @@ func (m *manager) Get(ctx context.Context, id int64) (Game, error) {
 			return nil, ErrSinglePlayer
 		}
 
-		r := newRoom(rec, m.idleTimeout, m.unloadIfIdle)
+		r, err := newRoom(rec, m.idleTimeout, m.unloadIfIdle)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
 		m.rooms[id] = r
 		m.mu.Unlock()
 		log.Printf("game %d (%s, %dx%d): loaded", r.id, r.name, r.worldSize, r.worldSize)

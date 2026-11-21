@@ -18,7 +18,8 @@ import (
 // never receives the canvas worker's messages: its acks, and commands such as
 // Pause.
 func TestOverrunningGameLeavesTimeForJavaScript(t *testing.T) {
-	l := NewGame(1024, nil)
+	l, err := NewGame(1024, nil)
+	require.NoError(t, err)
 	defer l.Close()
 	go func() { // drains frames as the engine worker's delivery loop does
 		for range l.Frames() {

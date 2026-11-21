@@ -25,7 +25,8 @@ func TestServeFlowControl(t *testing.T) {
 		Playing:    true,
 		Speed:      1,
 	}).Encode(nil)
-	g := local.NewGame(128, seed)
+	g, err := local.NewGame(128, seed)
+	require.NoError(t, err)
 	defer g.Close()
 
 	channel := js.Global().Get("MessageChannel").New()
