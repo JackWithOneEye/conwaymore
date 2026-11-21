@@ -117,7 +117,7 @@ type Game interface {
 // and lightweight StateUpdates are folded into a pending full frame's header so
 // neither cells nor the updated state are lost.
 type Subscriber struct {
-	msgs      chan []byte // capacity 1
+	msgs      *protocol.Mailbox
 	done      chan struct{}
 	closeOnce sync.Once
 	deleted   atomic.Bool
@@ -125,13 +125,13 @@ type Subscriber struct {
 
 func newSubscriber() *Subscriber {
 	return &Subscriber{
-		msgs: make(chan []byte, 1),
+		msgs: protocol.NewMailbox(),
 		done: make(chan struct{}),
 	}
 }
 
 func (s *Subscriber) Frames() <-chan []byte {
-	return s.msgs
+	return s.msgs.Messages()
 }
 
 func (s *Subscriber) Done() <-chan struct{} {
@@ -151,19 +151,11 @@ func (s *Subscriber) close(deleted bool) {
 	})
 }
 
-// offer hands the newest broadcast message to the subscriber.
-//
-// Called only by the room's broadcast goroutine while holding room.mu, whose
-// consumer only ever receives: after the non-blocking drain the channel is
-// empty, so the final send can never block.
+// offer hands the newest broadcast message to the subscriber. Its callers,
+// the broadcast goroutine and Subscribe, hold room.mu, so they never offer
+// at the same time.
 func (s *Subscriber) offer(o []byte) {
-	var pending []byte
-	select {
-	case pending = <-s.msgs:
-	default:
-	}
-
-	s.msgs <- protocol.Coalesce(pending, o)
+	s.msgs.Offer(o)
 }
 
 type worldSizeConfig uint
@@ -289,7 +281,7 @@ func (r *room) Subscribe() (*Subscriber, error) {
 
 	sub := newSubscriber()
 	if lo := r.lastOutput.Load(); lo != nil {
-		sub.msgs <- lo.([]byte)
+		sub.offer(lo.([]byte))
 	}
 	r.listeners[sub] = struct{}{}
 	return sub, nil

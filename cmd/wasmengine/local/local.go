@@ -18,10 +18,9 @@ type Game struct {
 	eng    engine.Engine
 	cancel context.CancelFunc
 
-	// frames holds the newest message not yet taken. The pump replaces it with
-	// each newer one, so a slow reader skips messages instead of falling
-	// behind, as the server does for its subscribers.
-	frames chan []byte
+	// frames holds the newest message not yet taken, as the server does for
+	// its subscribers.
+	frames *protocol.Mailbox
 
 	mu   sync.Mutex
 	last []byte // the newest full frame, with later state updates applied
@@ -39,7 +38,7 @@ func NewGame(size uint, seed []byte) (*Game, error) {
 	g := &Game{
 		eng:    eng,
 		cancel: cancel,
-		frames: make(chan []byte, 1),
+		frames: protocol.NewMailbox(),
 	}
 	go g.pump()
 	go g.eng.Start()
@@ -49,7 +48,7 @@ func NewGame(size uint, seed []byte) (*Game, error) {
 // pump moves the engine's messages to frames as soon as they are emitted, so
 // that the engine, which drops frames while its output is full, never drops one.
 func (g *Game) pump() {
-	defer close(g.frames)
+	defer g.frames.Close()
 	for o := range g.eng.Output() {
 		g.mu.Lock()
 		if protocol.IsStateUpdate(o) {
@@ -59,13 +58,7 @@ func (g *Game) pump() {
 		}
 		g.mu.Unlock()
 
-		// Only pump sends on frames, so after the drain the send cannot block.
-		var pending []byte
-		select {
-		case pending = <-g.frames:
-		default:
-		}
-		g.frames <- protocol.Coalesce(pending, o)
+		g.frames.Offer(o)
 	}
 }
 
@@ -78,7 +71,7 @@ func (g *Game) Submit(b []byte) error {
 // protocol.StateUpdate values, coalesced while not taken. It is closed once
 // the game is closed.
 func (g *Game) Frames() <-chan []byte {
-	return g.frames
+	return g.frames.Messages()
 }
 
 // Close stops the engine.

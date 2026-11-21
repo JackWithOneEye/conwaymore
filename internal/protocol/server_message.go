@@ -77,3 +77,38 @@ func Coalesce(pending, next []byte) []byte {
 	}
 	return next
 }
+
+// Mailbox holds the newest server message not yet taken by its reader. Each
+// Offer replaces the pending message (see Coalesce), so a slow reader skips
+// stale messages instead of falling behind, and the sender never waits.
+//
+// Offer and Close must be called by one sender at a time; any number of
+// goroutines may receive from Messages.
+type Mailbox struct {
+	ch chan []byte
+}
+
+func NewMailbox() *Mailbox {
+	return &Mailbox{ch: make(chan []byte, 1)}
+}
+
+// Offer hands b to the reader, coalescing it with a pending message.
+func (m *Mailbox) Offer(b []byte) {
+	var pending []byte
+	select {
+	case pending = <-m.ch:
+	default:
+	}
+	// Only the sender sends, so after the drain the send cannot block.
+	m.ch <- Coalesce(pending, b)
+}
+
+// Messages returns the pending message once there is one.
+func (m *Mailbox) Messages() <-chan []byte {
+	return m.ch
+}
+
+// Close closes Messages, after any pending message has been taken.
+func (m *Mailbox) Close() {
+	close(m.ch)
+}
